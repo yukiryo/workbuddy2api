@@ -1,6 +1,7 @@
 {
   "listen": ":7863",
   "api_key": "test_key",
+  "console_password": "",
   "auth_dir": "./auths",
   "state_file": "./data/state.json",
   "server": {
@@ -38,10 +39,6 @@
   "prompt": {
     "mode": "custom",
     "file": ""
-  },
-  "upstash": {
-    "url": "",
-    "token": ""
   },
   "pool": {
     "max_in_flight": 3,

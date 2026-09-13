@@ -42,8 +42,12 @@ func main() {
 	}
 	log.Printf("loaded %d account(s) from %s", len(auths), cfg.AuthDir)
 
-	// redisstore：未配置/连接失败 → Noop（纯内存模式，一切功能照常）。
+	// 存储层：go-redis 已裁剪，恒为纯内存 Noop（仅本地 state.json 持久化）。
+	// config 里遗留的 upstash.url/token 不再生效，非空时提示一次便于用户清理。
 	store := redisstore.New(cfg.Upstash.URL, cfg.Upstash.Token)
+	if cfg.Upstash.URL != "" {
+		log.Printf("[redisstore] 提示: 配置中的 upstash.url 已不再生效（该功能已裁剪），可安全删除")
+	}
 
 	p := pool.New(cfg.StateFile)
 	defer p.Flush() // 进程退出前强制落盘（后台 flush 每 5s 一次，退出时补一次）
@@ -59,10 +63,8 @@ func main() {
 
 	// 会话粘性路由（可配关闭）。
 	var sessRouter *session.Router
-	redisMode := "noop"
-	if _, ok := store.(redisstore.Noop); !ok {
-		redisMode = "upstash"
-	}
+	// 存储后端恒为内存（go-redis 已裁剪），保留字段供 /status 透出以维持前端兼容。
+	const redisMode = "noop"
 	if cfg.SessionSticky.Enabled {
 		sessRouter = session.New(session.Config{
 			TTL:        cfg.SessionTTL,
@@ -149,6 +151,12 @@ func main() {
 		Pool:         p,
 		Upstream:     up,
 		APIKey:       cfg.APIKey,
+		ConfigPath:   *cfgPath,
+		WebDir:       "/etc/workbuddy2api/web",
+		// 凭证目录：供控制台的凭证管理（增删/重载/OAuth 落盘）读写。
+		AuthDir: cfg.AuthDir,
+		// 控制台登录密码（空 = 不启用登录门，保持旧行为）。
+		ConsolePassword: cfg.ConsolePassword,
 		Session:      sessRouter,
 		StickyCount:  sessCount,
 		RedisMode:    redisMode,
@@ -175,7 +183,7 @@ func main() {
 		_ = srv.Shutdown(shutdownCtx)
 	}()
 
-	log.Printf("workbuddy2api listening on %s (api_key=%v)", cfg.Listen, cfg.APIKey != "")
+	log.Printf("workbuddy2api listening on %s (api_key=%v, console_login=%v)", cfg.Listen, cfg.APIKey != "", cfg.ConsolePassword != "")
 	if err := srv.ListenAndServe(); err != nil && err != http.ErrServerClosed {
 		log.Fatalf("http: %v", err)
 	}

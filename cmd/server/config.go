@@ -19,6 +19,8 @@ type Config struct {
 	APIKey    string `json:"api_key"`    // 空 = 不鉴权
 	AuthDir   string `json:"auth_dir"`   // ./auths
 	StateFile string `json:"state_file"` // ./data/state.json
+	// ConsolePassword 控制台（WebUI 与 /api/* 管理接口）登录密码；空 = 不启用登录。
+	ConsolePassword string `json:"console_password"`
 
 	Server struct {
 		// MaxBodyMB 聊天请求体大小上限（单位 MB，默认 8）。
@@ -181,6 +183,9 @@ func applyEnv(c *Config) {
 	if v := os.Getenv("WB2A_API_KEY"); v != "" {
 		c.APIKey = v
 	}
+	if v := os.Getenv("WB2A_CONSOLE_PASSWORD"); v != "" {
+		c.ConsolePassword = v
+	}
 	if v := os.Getenv("WB2A_AUTH_DIR"); v != "" {
 		c.AuthDir = v
 	}
@@ -300,6 +305,12 @@ func (c *Config) normalize() error {
 	}
 	if !strings.HasPrefix(c.Listen, ":") && !strings.Contains(c.Listen, ":") {
 		c.Listen = ":" + c.Listen
+	}
+	// 控制台密码去掉首尾空白；全空白视为"未设置"（不启用登录），避免一个空格被当成密码。
+	if strings.TrimSpace(c.ConsolePassword) == "" {
+		c.ConsolePassword = ""
+	} else {
+		c.ConsolePassword = strings.TrimSpace(c.ConsolePassword)
 	}
 	// 排程段归一（空数组回落默认、ActivityReportCount 归一、小时范围校验）
 	// 由 internal/config 统一实现，cmd/server 与 cmd/activity 共用同一份语义。
