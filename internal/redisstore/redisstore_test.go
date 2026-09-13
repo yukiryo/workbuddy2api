@@ -1,65 +1,50 @@
 package redisstore
 
 import (
-	"strings"
 	"testing"
 	"time"
 )
 
-func TestNormalizeURL(t *testing.T) {
-	cases := []struct {
-		name  string
-		url   string
-		token string
-		want  string
-	}{
-		{"完整rediss", "rediss://default:tok@host:6379", "ignored", "rediss://default:tok@host:6379"},
-		{"完整redis", "redis://default:tok@host:6379", "ignored", "redis://default:tok@host:6379"},
-		{"https host", "https://foo.upstash.io", "tok", "rediss://default:tok@foo.upstash.io:6379"},
-		{"裸host", "foo.upstash.io", "tok", "rediss://default:tok@foo.upstash.io:6379"},
+// TestNewReturnsNoop New 在任何入参下都返回 Noop（go-redis 已移除）。
+func TestNewReturnsNoop(t *testing.T) {
+	// 历史配置形（Upstash URL + token）与全空都要安全降级，不 panic、不发网络请求。
+	cases := []struct{ name, url, token string }{
+		{"空配置", "", ""},
+		{"https 主机形", "https://foo.upstash.io", "tok"},
+		{"完整 rediss 串", "rediss://default:tok@host:6379", "ignored"},
+		{"裸主机", "foo.upstash.io", "tok"},
+		{"非法串", "://bad host", ""},
 	}
 	for _, c := range cases {
 		t.Run(c.name, func(t *testing.T) {
-			if got := normalizeURL(c.url, c.token); got != c.want {
-				t.Errorf("normalizeURL(%q,%q)=%q want %q", c.url, c.token, got, c.want)
+			if _, ok := New(c.url, c.token).(Noop); !ok {
+				t.Fatalf("New(%q,%q) 应返回 Noop", c.url, c.token)
 			}
 		})
 	}
 }
 
-func TestNormalizeURLStripsTrailingPath(t *testing.T) {
-	// 用户照抄 Upstash 控制台的 REST 地址，可能带任意路径——剥 scheme 只取 host:port 之前段。
-	got := normalizeURL("https://foo.upstash.io", "t")
-	if strings.Contains(got, "://foo.upstash.io") && !strings.HasSuffix(got, "foo.upstash.io:6379") {
-		t.Errorf("unexpected: %s", got)
-	}
-}
-
-func TestNewEmptyURLReturnsNoop(t *testing.T) {
-	if _, ok := New("", "").(Noop); !ok {
-		t.Fatalf("empty url should return Noop")
-	}
-}
-
-func TestNewBadSchemeReturnsNoop(t *testing.T) {
-	// 组装出的连接串含空格 → ParseURL 解析失败 → 降级 Noop，不 panic、不发网络请求。
-	if _, ok := New("://bad host", "").(Noop); !ok {
-		t.Fatalf("bad url should return Noop")
-	}
-}
-
+// TestNoopMethods Noop 各方法空实现：不 panic，读操作报告无数据。
 func TestNoopMethods(t *testing.T) {
 	n := Noop{}
-	n.SetBind("k", "u", time.Minute) // 不 panic
+	n.SetBind("k", "u", time.Minute)
 	n.DelBind("k")
 	n.SaveState([]byte("{}"))
 	if _, ok := n.LoadState(); ok {
-		t.Error("Noop.LoadState should report not-found")
+		t.Error("Noop.LoadState 应报告未找到")
+	}
+	if binds := n.LoadBinds(); binds != nil {
+		t.Errorf("Noop.LoadBinds 应返回 nil，实际 %v", binds)
 	}
 }
 
-func TestBindKeyPrefix(t *testing.T) {
-	if got := bindKey("abc"); got != bindPrefix+"abc" {
-		t.Errorf("bindKey=%q want prefix", got)
+// TestStoreInterfaceSatisfied Noop 必须满足 Store 接口（session/pool 依赖此契约）。
+func TestStoreInterfaceSatisfied(t *testing.T) {
+	var s Store = Noop{}
+	// 编译期已由赋值保证；这里再跑一遍方法，防止接口被误改后静默漂移。
+	s.SetBind("a", "b", 0)
+	s.DelBind("a")
+	if _, ok := s.LoadState(); ok {
+		t.Error("应无快照")
 	}
 }
