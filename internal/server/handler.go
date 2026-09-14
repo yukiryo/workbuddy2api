@@ -9,6 +9,7 @@ import (
 	"log"
 	"net/http"
 	"os"
+	"path/filepath"
 	"strings"
 	"sync"
 	"time"
@@ -43,6 +44,13 @@ type Config struct {
 	PromptMode string
 	// PromptText custom 模式下注入的系统提示词文本（来自 config.PromptText）。
 	PromptText string
+
+	ConfigPath string // 配置文件路径，用于在线更新 API Key 并持久化
+	WebDir     string // WebUI 静态资源目录
+	// ConsolePassword 控制台登录密码；空 = 不启用登录（保持旧行为）。
+	ConsolePassword string
+	// AuthDir 凭证目录；空 = /etc/workbuddy2api/auths（供凭证管理读写）。
+	AuthDir string
 }
 
 // notFoundCooldown 上游 404 的固定短冷却时长。
@@ -58,9 +66,17 @@ const ServiceName = "workbuddy2api"
 
 // Handler 主路由。
 type Handler struct {
-	cfg     Config
-	mux     *http.ServeMux
-	degrade degradeGate
+	cfg          Config
+	mux          *http.ServeMux
+	degrade      degradeGate
+	mu           sync.RWMutex
+	usageTracker *UsageTracker
+	authGate     *authGate
+	// statusCache 账号深度状态缓存（30s TTL），防手动刷新打爆上游。
+	statusCache *statusCache
+	// oauthSessions 待完成的 OAuth 登录会话（仅内存，重启失效）。
+	oauthMu       sync.Mutex
+	oauthSessions map[string]*oauthSession
 }
 
 // NewHandler 构建 handler。
@@ -80,23 +96,159 @@ func NewHandler(cfg Config) *Handler {
 	if cfg.MaxBodyBytes <= 0 {
 		cfg.MaxBodyBytes = 8 << 20 // 请求体上限兜底 8MB
 	}
-	h := &Handler{cfg: cfg, mux: http.NewServeMux()}
+	h := &Handler{
+		cfg:           cfg,
+		mux:           http.NewServeMux(),
+		authGate:      newAuthGate(cfg.ConsolePassword),
+		statusCache:   newStatusCache(),
+		oauthSessions: make(map[string]*oauthSession),
+	}
+
+	// 用量统计跟踪器
+	usagePath := "/etc/workbuddy2api/data/usage.json"
+	if cfg.ConfigPath != "" {
+		usagePath = filepath.Join(filepath.Dir(cfg.ConfigPath), "data", "usage.json")
+	}
+	h.usageTracker = NewUsageTracker(usagePath)
+
 	h.mux.HandleFunc("POST /v1/chat/completions", h.withAuth(h.chatCompletions))
 	h.mux.HandleFunc("GET /v1/models", h.withAuth(h.models))
 	h.mux.HandleFunc("GET /status", h.withAuth(h.status))
 	h.mux.HandleFunc("GET /healthz", h.healthz)
+
+	// 后台 API 管理端点
+	h.mux.HandleFunc("GET /api/key", h.apiGetKey)
+	h.mux.HandleFunc("POST /api/key", h.apiSetKey)
+	h.mux.HandleFunc("GET /api/usage", h.apiGetUsage)
+	h.mux.HandleFunc("POST /api/usage/clear", h.apiClearUsage)
+
+	// 控制台登录会话（未配置密码时全部退化为放行）
+	h.mux.HandleFunc("POST /api/login", h.apiLogin)
+	h.mux.HandleFunc("POST /api/logout", h.apiLogout)
+	h.mux.HandleFunc("GET /api/session", h.apiSession)
+
+	// 账号深度状态：配额 / 签到 / 可用模型（真实请求上游，带 30s 缓存）
+	h.mux.HandleFunc("GET /api/accounts/status", h.apiAccountStatus)
+	h.mux.HandleFunc("POST /api/accounts/checkin", h.apiCheckin)
+
+	// 凭证管理：列表 / 上传 / 删除 / 重载 / OAuth 登录
+	h.mux.HandleFunc("GET /api/credentials", h.apiCredentials)
+	h.mux.HandleFunc("POST /api/credentials/upload", h.apiCredentialUpload)
+	h.mux.HandleFunc("POST /api/credentials/delete", h.apiCredentialDelete)
+	h.mux.HandleFunc("POST /api/credentials/reload", h.apiCredentialReload)
+	h.mux.HandleFunc("POST /api/credentials/oauth/start", h.apiOAuthStart)
+	h.mux.HandleFunc("POST /api/credentials/oauth/poll", h.apiOAuthPoll)
+
+	// 静态文件服务：WebUI
+	webDir := h.cfg.WebDir
+	if webDir == "" {
+		webDir = "/etc/workbuddy2api/web"
+	}
+	if _, err := os.Stat(webDir); err != nil {
+		if _, err := os.Stat("web"); err == nil {
+			webDir = "web"
+		}
+	}
+	if fi, err := os.Stat(webDir); err == nil && fi.IsDir() {
+		fileServer := http.FileServer(http.Dir(webDir))
+		h.mux.HandleFunc("GET /", func(w http.ResponseWriter, r *http.Request) {
+			p := r.URL.Path
+			if p == "/" || p == "/index.html" || p == "/style.css" || p == "/app.js" || strings.HasPrefix(p, "/assets/") {
+				fileServer.ServeHTTP(w, r)
+				return
+			}
+			fullPath := filepath.Join(webDir, filepath.Clean(p))
+			if info, err := os.Stat(fullPath); err == nil && !info.IsDir() {
+				fileServer.ServeHTTP(w, r)
+				return
+			}
+			indexPath := filepath.Join(webDir, "index.html")
+			if _, err := os.Stat(indexPath); err == nil {
+				http.ServeFile(w, r, indexPath)
+				return
+			}
+			http.NotFound(w, r)
+		})
+	}
+
 	return h
 }
 
+func (h *Handler) getAPIKey() string {
+	h.mu.RLock()
+	defer h.mu.RUnlock()
+	return h.cfg.APIKey
+}
+
+func (h *Handler) setAPIKey(newKey string) error {
+	h.mu.Lock()
+	h.cfg.APIKey = newKey
+	cfgPath := h.cfg.ConfigPath
+	h.mu.Unlock()
+
+	if cfgPath != "" {
+		data, err := os.ReadFile(cfgPath)
+		if err == nil {
+			var raw map[string]any
+			if err := json.Unmarshal(data, &raw); err == nil {
+				raw["api_key"] = newKey
+				if out, err := json.MarshalIndent(raw, "", "  "); err == nil {
+					_ = os.WriteFile(cfgPath, out, 0o644)
+				}
+			}
+		}
+	}
+	return nil
+}
+
+func (h *Handler) apiGetKey(w http.ResponseWriter, r *http.Request) {
+	writeJSON(w, http.StatusOK, map[string]any{
+		"api_key": h.getAPIKey(),
+		"success": true,
+	})
+}
+
+func (h *Handler) apiSetKey(w http.ResponseWriter, r *http.Request) {
+	var body struct {
+		APIKey string `json:"api_key"`
+	}
+	if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+		writeJSON(w, http.StatusBadRequest, map[string]any{
+			"success": false,
+			"message": "invalid request body",
+		})
+		return
+	}
+	newKey := strings.TrimSpace(body.APIKey)
+	_ = h.setAPIKey(newKey)
+	writeJSON(w, http.StatusOK, map[string]any{
+		"success": true,
+		"message": "API key updated successfully",
+		"api_key": h.getAPIKey(),
+	})
+}
+
 func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
+	w.Header().Set("Access-Control-Allow-Origin", "*")
+	w.Header().Set("Access-Control-Allow-Methods", "GET, POST, PUT, DELETE, OPTIONS")
+	w.Header().Set("Access-Control-Allow-Headers", "Content-Type, Authorization, X-Requested-With")
+	if r.Method == "OPTIONS" {
+		w.WriteHeader(http.StatusOK)
+		return
+	}
+	// 登录门：未登录时浏览器跳 /login.html，接口请求返回 401 JSON。
+	if h.gateCheck(w, r) {
+		return
+	}
 	h.mux.ServeHTTP(w, r)
 }
 
 func (h *Handler) withAuth(next http.HandlerFunc) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
-		if h.cfg.APIKey != "" {
+		apiKey := h.getAPIKey()
+		if apiKey != "" {
 			authz := r.Header.Get("Authorization")
-			if !strings.HasPrefix(authz, "Bearer ") || strings.TrimPrefix(authz, "Bearer ") != h.cfg.APIKey {
+			if !strings.HasPrefix(authz, "Bearer ") || strings.TrimPrefix(authz, "Bearer ") != apiKey {
 				writeOpenAIError(w, http.StatusUnauthorized, "invalid_api_key", "missing or invalid API key")
 				return
 			}
@@ -433,11 +585,35 @@ func (h *Handler) chatCompletions(w http.ResponseWriter, r *http.Request) {
 			stats := newChatStatsReaderSince(rc, st.start)
 			_ = upstream.Stream(w, stats)
 			st.ttfb = stats.TTFB()
-			st.toks, _ = stats.Tokens()
+			compToks, hasToks := stats.Tokens()
+			st.toks = compToks
 			// 成本账本：末帧 usage 带 credit 与 token 总数时记录实测单价，
 			// 供下次选号把免费/便宜的号排在前面。
-			if credit, ok := stats.Credit(); ok {
+			credit, hasCredit := stats.Credit()
+			if hasCredit {
 				h.cfg.Pool.NoteModelCost(acct.UID, peek.Model, credit, stats.TotalTokens())
+			}
+			// 用量统计跟踪
+			if h.usageTracker != nil {
+				actualComp := compToks
+				if !hasToks || actualComp < 0 {
+					actualComp = 0
+				}
+				actualPrompt := stats.prompt
+				actualCredit := 0.0
+				if hasCredit {
+					actualCredit = credit
+				}
+				h.usageTracker.Record(UsageRecord{
+					Timestamp:        time.Now().Unix(),
+					Model:            peek.Model,
+					UID:              acct.UID,
+					PromptTokens:     actualPrompt,
+					CompletionTokens: actualComp,
+					TotalTokens:      stats.TotalTokens(),
+					Credit:           actualCredit,
+					DurationMS:       time.Since(st.start).Milliseconds(),
+				})
 			}
 			rc.Close()
 			return
@@ -452,10 +628,32 @@ func (h *Handler) chatCompletions(w http.ResponseWriter, r *http.Request) {
 		}
 		writeJSON(w, http.StatusOK, resp)
 		st.status = http.StatusOK
-		st.toks = completionTokens(resp)
-		// 成本账本（非流式）：从聚合响应的 usage 取 credit 与 token 总数。
-		if credit, total, ok := usageCreditTotal(resp); ok {
+		compToks := completionTokens(resp)
+		st.toks = compToks
+		credit, total, ok := usageCreditTotal(resp)
+		if ok {
 			h.cfg.Pool.NoteModelCost(acct.UID, peek.Model, credit, total)
+		}
+		// 用量统计跟踪
+		if h.usageTracker != nil {
+			actualComp := compToks
+			if actualComp < 0 {
+				actualComp = 0
+			}
+			actualPrompt := total - actualComp
+			if actualPrompt < 0 {
+				actualPrompt = 0
+			}
+			h.usageTracker.Record(UsageRecord{
+				Timestamp:        time.Now().Unix(),
+				Model:            peek.Model,
+				UID:              acct.UID,
+				PromptTokens:     actualPrompt,
+				CompletionTokens: actualComp,
+				TotalTokens:      total,
+				Credit:           credit,
+				DurationMS:       time.Since(st.start).Milliseconds(),
+			})
 		}
 		return
 	}

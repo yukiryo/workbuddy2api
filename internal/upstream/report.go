@@ -21,9 +21,22 @@ import (
 const reportPath = "/v2/report"
 
 // billingJSON 发 billing 域（billingBase，codebuddy.cn）请求并解信封；body 为 nil 时不带请求体。
-// 与 travel.go 的 growthJSON 对称（growth 域走 chatBase + BillingHeaders；billing 域走 billingBase）。
-// report/checkin 等 billing 端点共用：请求头统一 BillingHeaders，信封与错误语义同 doJSON。
+// 与 growthJSON 共享 jsonEnvelope，仅 base 不同。
 func (c *Client) billingJSON(a *auth.Auth, method, path string, body any) (json.RawMessage, error) {
+	return c.jsonEnvelope(a, method, c.billingBase(a), path, body)
+}
+
+// growthJSON 发 growth 域（chatBase，copilot.tencent.com）请求并解信封。
+// 与 billingJSON 的唯一差异是 base 域；请求头同为 BillingHeaders。
+func (c *Client) growthJSON(a *auth.Auth, method, path string, body any) (json.RawMessage, error) {
+	return c.jsonEnvelope(a, method, c.chatBase(a), path, body)
+}
+
+// jsonEnvelope 组装并发送一个"带信封"的 JSON 请求（BillingHeaders + doJSON 解 code/msg 信封）。
+//
+// billing 与 growth 两个域此前各有一份逐字相同的实现（仅 base 一行不同），
+// 合并到此处：新增端点只需选 base，不必再复制 15 行样板。
+func (c *Client) jsonEnvelope(a *auth.Auth, method, base, path string, body any) (json.RawMessage, error) {
 	var rdr io.Reader
 	if body != nil {
 		raw, err := json.Marshal(body)
@@ -32,7 +45,7 @@ func (c *Client) billingJSON(a *auth.Auth, method, path string, body any) (json.
 		}
 		rdr = bytes.NewReader(raw)
 	}
-	req, err := http.NewRequest(method, c.billingBase(a)+path, rdr)
+	req, err := http.NewRequest(method, base+path, rdr)
 	if err != nil {
 		return nil, err
 	}

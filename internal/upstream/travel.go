@@ -3,10 +3,8 @@
 package upstream
 
 import (
-	"bytes"
 	"encoding/json"
 	"errors"
-	"io"
 	"net/http"
 	"strings"
 
@@ -41,24 +39,8 @@ type TravelState struct {
 	RewardCredit      int64  `json:"reward_credit"`       // 到站可领奖励积分
 }
 
-// growthJSON 发 growth 域请求并解信封；body 为 nil 时不带请求体。
-// 错误语义与 doJSON 一致：HTTP 非 2xx / 业务 code != 0 → *Error。
-func (c *Client) growthJSON(a *auth.Auth, method, path string, body any) (json.RawMessage, error) {
-	var rdr io.Reader
-	if body != nil {
-		raw, err := json.Marshal(body)
-		if err != nil {
-			return nil, err
-		}
-		rdr = bytes.NewReader(raw)
-	}
-	req, err := http.NewRequest(method, c.chatBase(a)+path, rdr)
-	if err != nil {
-		return nil, err
-	}
-	c.BillingHeaders(req, a)
-	return c.doJSON(req)
-}
+// growthJSON 已合并到 report.go 的 jsonEnvelope（两域仅 base 不同，不必各留一份）。
+// travel/growth 各方法继续调 c.growthJSON(...)，语义不变。
 
 // TravelStatus 查询猫猫旅行状态。
 func (c *Client) TravelStatus(a *auth.Auth) (*TravelState, error) {

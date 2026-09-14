@@ -10,6 +10,8 @@ import (
 	"strings"
 	"sync/atomic"
 	"time"
+
+	"workbuddy2api/internal/logfmt"
 )
 
 // chatSeq 进程级请求序号。
@@ -171,15 +173,11 @@ func usageCreditTotal(resp map[string]any) (credit float64, total int, ok bool) 
 }
 
 // uidPrefix 只显示 uid 前 8 位；空 uid 显示 "-"。
-func uidPrefix(uid string) string {
-	if uid == "" {
-		return "-"
-	}
-	if len(uid) > 8 {
-		return uid[:8]
-	}
-	return uid
-}
+//
+// 只是 logfmt.UID8 的本地别名：两者函数体逐字节相同，保留此转发是为了
+// 让包内日志行读起来更短，同时把"日志 uid 口径唯一"这一约定收敛到 logfmt
+// （调度/池/上游各包也都走 logfmt.UID8）。实现不再重复一份。
+func uidPrefix(uid string) string { return logfmt.UID8(uid) }
 
 // logChatRow 打印一行请求级表格日志（直接输出 stdout，无 log 时间戳前缀）。
 // toks<0 表示 usage 缺失，显示 "-"。
