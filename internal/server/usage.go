@@ -94,6 +94,72 @@ func (t *UsageTracker) Clear() {
 	t.save()
 }
 
+// recordUsage 记录一次**流式**成功请求的用量。
+//
+// 为什么必须显式调用：UsageTracker.Record 此前从未被任何地方调用过，
+// 导致 usage.json 只有首次加载的历史数据、之后永不增长——控制台的
+// 趋势图与明细表看到的都是陈旧快照（表现为"明明用了很多却显示 0"）。
+//
+// usage 缺失（hasUsage=false）时不记录：宁可不记，也不写一条 token 全 0
+// 的假记录，否则会污染趋势与占比统计。credit 缺失记 0（缺失≠0 但此处
+// 仅用于展示，成本决策走 pool.NoteModelCost 的独立路径）。
+func (h *Handler) recordUsage(uid, model string, stats *chatStatsReader, st *chatStat) {
+	if h.usageTracker == nil || stats == nil {
+		return
+	}
+	completion, ok := stats.Tokens()
+	if !ok {
+		return // 无 usage：不写假记录
+	}
+	credit, _ := stats.Credit()
+	h.usageTracker.Record(UsageRecord{
+		Timestamp:        time.Now().Unix(),
+		Model:            model,
+		UID:              uid,
+		PromptTokens:     stats.PromptTokens(),
+		CompletionTokens: completion,
+		TotalTokens:      stats.PromptTokens() + completion,
+		Credit:           credit,
+		DurationMS:       time.Since(st.start).Milliseconds(),
+	})
+}
+
+// recordUsageFromResp 记录一次**非流式**成功请求的用量（对应 recordUsage 的同步分支）。
+func (h *Handler) recordUsageFromResp(uid, model string, resp map[string]any, st *chatStat) {
+	if h.usageTracker == nil || resp == nil {
+		return
+	}
+	u, ok := resp["usage"].(map[string]any)
+	if !ok {
+		return // 无 usage：不写假记录
+	}
+	num := func(k string) int {
+		if v, ok := u[k].(float64); ok {
+			return int(v)
+		}
+		return 0
+	}
+	credit := 0.0
+	if v, ok := u["credit"].(float64); ok {
+		credit = v
+	}
+	prompt, completion := num("prompt_tokens"), num("completion_tokens")
+	total := num("total_tokens")
+	if total == 0 {
+		total = prompt + completion
+	}
+	h.usageTracker.Record(UsageRecord{
+		Timestamp:        time.Now().Unix(),
+		Model:            model,
+		UID:              uid,
+		PromptTokens:     prompt,
+		CompletionTokens: completion,
+		TotalTokens:      total,
+		Credit:           credit,
+		DurationMS:       time.Since(st.start).Milliseconds(),
+	})
+}
+
 // ModelStat 模型用量统计明细。
 type ModelStat struct {
 	Model            string  `json:"model"`

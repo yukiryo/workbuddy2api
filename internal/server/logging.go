@@ -87,6 +87,9 @@ func (s *chatStatsReader) Credit() (float64, bool) { return s.credit, s.hasUsage
 // TotalTokens 返回本次请求总 token 数（prompt + completion），供成本单价折算。
 func (s *chatStatsReader) TotalTokens() int { return s.prompt + s.tokens }
 
+// PromptTokens 返回末帧 usage.prompt_tokens（与 TotalTokens 配对，供用量历史记录）。
+func (s *chatStatsReader) PromptTokens() int { return s.prompt }
+
 // parseSSELine 解析一行 "data: {...}"：首帧记 TTFB，含 usage 时采信精确 completion_tokens。
 func (s *chatStatsReader) parseSSELine(line string) {
 	line = strings.TrimRight(line, "\r\n")

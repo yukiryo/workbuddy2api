@@ -768,6 +768,8 @@ func (h *Handler) chatCompletions(w http.ResponseWriter, r *http.Request) {
 				// 不算合法成本观测（缺失≠0），仅记一条 WARN 协助排障，绝不写入账本。
 				log.Printf("WARN: [server] stream usage without credit uid=%s model=%s (no cost observation)", logfmt.UID8(acct.UID), bareModel)
 			}
+			// 用量历史（控制台趋势图/明细表的数据源）
+			h.recordUsage(acct.UID, bareModel, stats, st)
 			rc.Close()
 			return
 		}
@@ -786,6 +788,8 @@ func (h *Handler) chatCompletions(w http.ResponseWriter, r *http.Request) {
 		if credit, total, ok := usageCreditTotal(resp); ok {
 			h.cfg.Pool.NoteModelCost(acct.UID, bareModel, credit, total)
 		}
+		// 用量历史（控制台趋势图/明细表的数据源）
+		h.recordUsageFromResp(acct.UID, bareModel, resp, st)
 		return
 	}
 	msg := "all accounts unavailable (cooling/disabled)"
