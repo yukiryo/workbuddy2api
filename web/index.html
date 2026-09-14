@@ -439,9 +439,22 @@
               <h3 class="text-base font-bold">兼容模型列表</h3>
               <p class="text-xs text-slate-400 mt-0.5">支持在所有 OpenAI / Anthropic 客户端中使用的模型名</p>
             </div>
-            <div class="relative w-full sm:w-64">
-              <i data-lucide="search" class="w-4 h-4 text-slate-400 absolute left-3 top-2.5"></i>
-              <input type="text" id="model-search-input" oninput="app.filterModels()" placeholder="搜索模型名称..." class="w-full bg-white dark:bg-dark-card border border-slate-200 dark:border-dark-border rounded-xl pl-9 pr-3 py-1.5 text-xs text-slate-700 dark:text-slate-200 placeholder-slate-400 focus:outline-none focus:border-indigo-500">
+            <div class="flex flex-col sm:flex-row sm:items-center gap-2 sm:gap-3">
+              <!-- 排序切换 -->
+              <div class="bg-slate-100 dark:bg-slate-900 p-1 rounded-xl flex items-center gap-1 border border-slate-200 dark:border-slate-800 text-xs">
+                <button onclick="app.setModelSort('default')" data-sort="default"
+                        class="model-sort-btn px-3 py-1 rounded-lg text-slate-500 dark:text-slate-400 hover:text-slate-900 dark:hover:text-white transition-all font-medium">
+                  默认顺序
+                </button>
+                <button onclick="app.setModelSort('credits')" data-sort="credits"
+                        class="model-sort-btn px-3 py-1 rounded-lg text-slate-500 dark:text-slate-400 hover:text-slate-900 dark:hover:text-white transition-all font-medium">
+                  按积分倍率
+                </button>
+              </div>
+              <div class="relative w-full sm:w-64">
+                <i data-lucide="search" class="w-4 h-4 text-slate-400 absolute left-3 top-2.5"></i>
+                <input type="text" id="model-search-input" oninput="app.filterModels()" placeholder="搜索模型名称..." class="w-full bg-white dark:bg-dark-card border border-slate-200 dark:border-dark-border rounded-xl pl-9 pr-3 py-1.5 text-xs text-slate-700 dark:text-slate-200 placeholder-slate-400 focus:outline-none focus:border-indigo-500">
+              </div>
             </div>
           </div>
 

@@ -12,6 +12,7 @@ import (
 	"log"
 	"net/http"
 	"regexp"
+	"strconv"
 	"strings"
 	"sync"
 	"time"
@@ -673,6 +674,41 @@ type ModelInfo struct {
 	ContextWindow int64    // = maxInputTokens
 	MaxTokens     int64    // = maxOutputTokens
 	Efforts       []string // reasoning.supportedEfforts（空=未知/固定档）
+
+	// Credits 官方积分倍率（模型目录 credits 字段，如 "x0.03 credits" -> 0.03）。
+	// HasCredits=false 表示该模型无固定倍率（如 auto：官方描述为「积分倍率随之浮动」）。
+	//
+	// 注意口径：这是**官方标称倍率**，与 pool.modelCost（按实测扣费记账）是两套东西，
+	// 勿混用——前者是"标价"，后者是"实际花了多少"。
+	Credits    float64
+	HasCredits bool
+	// CreditsText 官方原始文本（如 "x0.03 credits"），保留供界面原样展示。
+	CreditsText string
+}
+
+// parseCredits 解析模型目录的 credits 字段。
+//
+// 官方形如 "x0.03 credits" / "x1.62 credits"；少数模型无此字段（如 auto、图片模型）。
+// 解析失败或缺失时返回 ok=false，由调用方决定展示策略（界面显示"浮动"）。
+func parseCredits(raw string) (float64, bool) {
+	s := strings.TrimSpace(raw)
+	if s == "" {
+		return 0, false
+	}
+	// 去掉前缀 x 与后缀单位，只留数字部分
+	s = strings.TrimPrefix(strings.TrimPrefix(s, "x"), "X")
+	i := 0
+	for i < len(s) && (s[i] == '.' || (s[i] >= '0' && s[i] <= '9')) {
+		i++
+	}
+	if i == 0 {
+		return 0, false
+	}
+	v, err := strconv.ParseFloat(s[:i], 64)
+	if err != nil {
+		return 0, false
+	}
+	return v, true
 }
 
 // 模型目录端点路径常量（按 realm 切）：
@@ -723,7 +759,9 @@ func (c *Client) FetchModels(a *auth.Auth) ([]ModelInfo, error) {
 				MaxInputTokens  int64  `json:"maxInputTokens"`
 				MaxOutputTokens int64  `json:"maxOutputTokens"`
 				Disabled        bool   `json:"disabled"`
-				Reasoning       struct {
+				// Credits 官方积分倍率文本（"x0.03 credits"；部分模型无此字段）
+				Credits   string `json:"credits"`
+				Reasoning struct {
 					Effort           string   `json:"effort"`
 					SupportedEfforts []string `json:"supportedEfforts"`
 				} `json:"reasoning"`
@@ -757,8 +795,12 @@ func (c *Client) FetchModels(a *auth.Auth) ([]ModelInfo, error) {
 		MaxOutputTokens int64
 		Disabled        bool
 		Efforts         []string
+		Credits         float64
+		HasCredits      bool
+		CreditsText     string
 	}, len(env.Data.Models))
 	for _, m := range env.Data.Models {
+		cr, ok := parseCredits(m.Credits)
 		dynMap[m.ID] = struct {
 			ID              string
 			Name            string
@@ -766,7 +808,11 @@ func (c *Client) FetchModels(a *auth.Auth) ([]ModelInfo, error) {
 			MaxOutputTokens int64
 			Disabled        bool
 			Efforts         []string
-		}{m.ID, m.Name, m.MaxInputTokens, m.MaxOutputTokens, m.Disabled, m.Reasoning.SupportedEfforts}
+			Credits         float64
+			HasCredits      bool
+			CreditsText     string
+		}{m.ID, m.Name, m.MaxInputTokens, m.MaxOutputTokens, m.Disabled,
+			m.Reasoning.SupportedEfforts, cr, ok, strings.TrimSpace(m.Credits)}
 	}
 	out := make([]ModelInfo, 0, len(cliIDs))
 	for _, id := range cliIDs {
@@ -780,6 +826,9 @@ func (c *Client) FetchModels(a *auth.Auth) ([]ModelInfo, error) {
 			ContextWindow: m.MaxInputTokens,
 			MaxTokens:     m.MaxOutputTokens,
 			Efforts:       m.Efforts,
+			Credits:       m.Credits,
+			HasCredits:    m.HasCredits,
+			CreditsText:   m.CreditsText,
 		})
 	}
 	if len(out) == 0 {

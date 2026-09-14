@@ -16,6 +16,8 @@ class WorkBuddyApp {
     this.cachedAccountStatus = null;   // 账号深度状态（配额/签到/模型）
     this.cachedCredentials = null;     // 凭证列表
     this.oauthState = null;            // 进行中的 OAuth 会话
+    // 模型广场排序方式：default（官方顺序）/ credits（积分倍率升序）
+    this.modelSort = localStorage.getItem('wb_model_sort') || 'default';
     this.usageRange = '24h';
     this.isFetching = false;
     this.chatHistory = [];
@@ -1101,7 +1103,8 @@ class WorkBuddyApp {
       if (!res.ok) return;
       const data = await res.json();
       this.cachedModels = data.data || [];
-      this.renderModels(this.cachedModels);
+      // 恢复上次选择的排序按钮高亮（setModelSort 会重绘）
+      this.setModelSort(this.modelSort || 'default');
 
       // 同步到 playground 下拉菜单
       const select = document.getElementById('play-model-select');
@@ -1127,13 +1130,62 @@ class WorkBuddyApp {
     return { realm: 'cn', bare: s };
   }
 
+  // 切换模型排序方式
+  setModelSort(mode) {
+    this.modelSort = mode;
+    localStorage.setItem('wb_model_sort', mode);
+    // 更新按钮高亮
+    document.querySelectorAll('.model-sort-btn').forEach(b => {
+      const on = b.getAttribute('data-sort') === mode;
+      b.className = b.className
+        .replace(/\s*bg-white\b|\s*dark:bg-dark-card\b|\s*shadow-sm\b|\s*text-indigo-600\b|\s*dark:text-indigo-400\b|\s*font-semibold\b/g, '')
+        .trim();
+      if (on) b.className += ' bg-white dark:bg-dark-card shadow-sm text-indigo-600 dark:text-indigo-400 font-semibold';
+    });
+    this.renderModels(this.cachedModels);
+  }
+
+  // sortModels 按当前排序方式处理模型列表。
+  //   default : 保持后端顺序（与官方控制台一致）
+  //   credits : 按官方积分倍率升序（便宜的在前面；无倍率的排最后）
+  sortModels(list) {
+    const mode = this.modelSort || 'default';
+    if (mode !== 'credits') return list.slice();
+    return list.slice().sort((a, b) => {
+      const av = (typeof a.credits === 'number') ? a.credits : Infinity;
+      const bv = (typeof b.credits === 'number') ? b.credits : Infinity;
+      if (av !== bv) return av - bv;
+      return String(a.id).localeCompare(String(b.id));
+    });
+  }
+
+  // creditsBadge 渲染积分倍率徽章。
+  // 无固定倍率（如 auto：官方描述"积分倍率随之浮动"）显示"浮动"。
+  creditsBadge(m) {
+    if (typeof m.credits !== 'number') {
+      return `<span class="px-2 py-0.5 rounded-lg text-[10px] font-semibold bg-slate-500/10 text-slate-400 border border-slate-500/20" title="官方未标注固定倍率，随任务动态浮动">倍率浮动</span>`;
+    }
+    const v = m.credits;
+    const text = 'x' + v.toFixed(2);
+    if (v === 0) {
+      return `<span class="px-2 py-0.5 rounded-lg text-[10px] font-bold bg-emerald-500/15 text-emerald-500 border border-emerald-500/30" title="免费，不消耗积分">免费 ${text}</span>`;
+    }
+    // 便宜（<0.1）偏绿、中等（<1）偏蓝、贵（>=1）偏橙
+    const cls = v < 0.1 ? 'bg-emerald-500/10 text-emerald-600 dark:text-emerald-400 border-emerald-500/20'
+      : v < 1 ? 'bg-sky-500/10 text-sky-600 dark:text-sky-400 border-sky-500/20'
+      : 'bg-orange-500/10 text-orange-600 dark:text-orange-400 border-orange-500/20';
+    return `<span class="px-2 py-0.5 rounded-lg text-[10px] font-semibold border ${cls}" title="官方积分倍率">${text}</span>`;
+  }
+
   renderModels(models) {
     const container = document.getElementById('models-container');
     if (!container) return;
 
+    const sorted = this.sortModels(models);
+
     // 统计按 realm 分组（用于导航角标与分组标题）
     const groups = { cn: [], global: [] };
-    models.forEach(m => {
+    sorted.forEach(m => {
       const { realm } = this.parseModelId(m.id);
       (groups[realm] || groups.cn).push(m);
     });
@@ -1204,6 +1256,12 @@ class WorkBuddyApp {
     return `
       <div class="p-4 sm:p-5 rounded-2xl bg-white dark:bg-dark-card border border-slate-200 dark:border-dark-border shadow-sm flex flex-col justify-between hover:border-indigo-500/50 transition-colors">
         <div class="space-y-3">
+          <!-- 顶部：倍率徽章 -->
+          <div class="flex items-center justify-between gap-2">
+            ${this.creditsBadge(m)}
+            <span class="text-[10px] text-slate-400 font-mono">${this.escapeHtml(m.name || '')}</span>
+          </div>
+
           <!-- model id 主体：等宽大字 + 复制按钮 -->
           <div class="flex items-start justify-between gap-2">
             <div class="min-w-0 flex-1">

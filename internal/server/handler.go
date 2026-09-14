@@ -418,9 +418,19 @@ func (h *Handler) modelList() []map[string]any {
 				if mi.ContextWindow == 0 {
 					entry["context_length"] = 131072 // 兜底
 				}
+				// 官方积分倍率：透出原始文本与解析后的数值。
+				// 无固定倍率的模型（如 auto）不带这两个键，由客户端据此显示"浮动"。
+				if mi.HasCredits {
+					entry["credits"] = mi.Credits
+					if mi.CreditsText != "" {
+						entry["credits_text"] = mi.CreditsText
+					}
+				}
 				out = append(out, entry)
 			}
 		} else {
+			// 静态兜底：硬编码表没有官方倍率数据（倍率只在上游模型目录接口里），
+			// 故此处不伪造 credits 字段——客户端会自动显示"浮动/未知"。
 			for _, m := range staticModels {
 				e := make(map[string]any, len(m)+1)
 				for k, v := range m {
