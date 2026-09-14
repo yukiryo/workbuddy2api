@@ -22,6 +22,9 @@ config.json
 # Build artifacts
 *.tmp
 __pycache__/
+# 体积分析/对比构建的临时输出目录
+_sz/
+_sizecheck/
 
 # Backups (contains auth tokens)
 backups/
