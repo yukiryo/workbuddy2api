@@ -1857,7 +1857,7 @@ class WorkBuddyApp {
   // ===== 用量面板：时间范围与自动刷新（对齐参考项目 codebuddy2api）=====
 
   // setAutoRefresh 设置自动刷新间隔（秒，0 = 关闭）。
-  // 用 setInterval + 倒计时显示，切换间隔时重建定时器。
+  // 偏好存 localStorage（本机浏览器生效；用量数据本身在路由器上，换设备不丢）。
   setAutoRefresh(seconds) {
     const sec = parseInt(seconds, 10) || 0;
     this.autoRefreshSeconds = sec;
@@ -1867,9 +1867,15 @@ class WorkBuddyApp {
     this.renderRefreshHint();
   }
 
+  // restartAutoRefresh 重建自动刷新定时器。
+  //
+  // 用 **setTimeout 递归**（对齐参考项目 codebuddy2api），而不是 setInterval。
+  // 原因：setInterval 是固定节奏，某次请求若慢于间隔（路由器 + 上游常有几秒
+  // 延迟），下一次会照发不误，请求越堆越多。setTimeout 递归保证**上一次完成后**
+  // 才排下一次，天然不会堆积。
   restartAutoRefresh() {
     if (this.autoRefreshTimer) {
-      clearInterval(this.autoRefreshTimer);
+      clearTimeout(this.autoRefreshTimer);
       this.autoRefreshTimer = null;
     }
     if (this.autoRefreshCountdown) {
@@ -1882,6 +1888,7 @@ class WorkBuddyApp {
       if (cd) cd.textContent = '';
       return;
     }
+
     this.autoRefreshLeft = sec;
     // 倒计时显示（每 250ms 刷新一次，避免秒数跳变观感差）
     this.autoRefreshCountdown = setInterval(() => {
@@ -1889,19 +1896,27 @@ class WorkBuddyApp {
       const el = document.getElementById('usage-countdown');
       if (el) el.textContent = Math.ceil(this.autoRefreshLeft) + 's';
     }, 250);
-    // 到期拉取
-    this.autoRefreshTimer = setInterval(() => {
+
+    // 到期拉取；完成后再次排期（递归），不并发
+    const tick = async () => {
       this.autoRefreshLeft = sec;
       // 只在用量页可见时刷新，避免用户切走后仍在后台打后端
       if (this.currentTab === 'usage') {
-        this.fetchUsage(this.usageRange || '24h');
+        try {
+          await this.fetchUsage(this.usageRange || '24h');
+        } catch (_) { /* 单次失败不中断排期 */ }
       }
-    }, sec * 1000);
+      // fetchUsage 可能已重建定时器（例如用户中途切换档位），需复查
+      if (this.autoRefreshSeconds > 0 && this.currentTab === 'usage') {
+        this.autoRefreshTimer = setTimeout(tick, this.autoRefreshSeconds * 1000);
+      }
+    };
+    this.autoRefreshTimer = setTimeout(tick, sec * 1000);
   }
 
-  // 离开用量页时暂停自动刷新（省掉无谓的后端请求与路由器负载）
+  // pauseAutoRefresh 离开用量页时停掉定时器（省掉无谓的后端请求与路由器负载）
   pauseAutoRefresh() {
-    if (this.autoRefreshTimer) { clearInterval(this.autoRefreshTimer); this.autoRefreshTimer = null; }
+    if (this.autoRefreshTimer) { clearTimeout(this.autoRefreshTimer); this.autoRefreshTimer = null; }
     if (this.autoRefreshCountdown) { clearInterval(this.autoRefreshCountdown); this.autoRefreshCountdown = null; }
     const cd = document.getElementById('usage-countdown');
     if (cd) cd.textContent = '';
@@ -2204,9 +2219,9 @@ class WorkBuddyApp {
     const maxCredit = Math.max(0.0001, ...buckets.map(creditOf));
 
     const width = 800;
-    const height = 200;
+    const height = 210;
     const padTop = 18;
-    const padBottom = 28;
+    const padBottom = 44;  // 斜向标签需要更多底部空间
     const padLeft = 48;   // 左侧留给 token 轴标签
     const padRight = 52;  // 右侧留给积分轴标签
     const plotW = width - padLeft - padRight;
@@ -2218,36 +2233,83 @@ class WorkBuddyApp {
     const tokenPoints = buckets.map((b, i) => ({ x: xAt(i), y: yToken(tokenOf(b)), b }));
     const creditPoints = buckets.map((b, i) => ({ x: xAt(i), y: yCredit(creditOf(b)), b }));
 
-    const linePath = (pts) => pts.map((p, i) => `${i === 0 ? 'M' : 'L'} ${p.x.toFixed(1)} ${p.y.toFixed(1)}`).join(' ');
+    // 曲线用**单调三次插值**（逐字移植自参考项目 codebuddy2api 的 getMonotoneLinePath）。
+    //
+    // 相比直线折线的收益：观感平滑。关键在"单调"——普通三次样条会在数据
+    // 陡变处过冲，凭空画出数据里不存在的峰谷（对用量/成本曲线是误导）。
+    // 单调插值在极值点（斜率变号）把切线归零，保证曲线不越出相邻点的范围。
+    const monotonePath = (points) => {
+      if (!points.length) return '';
+      if (points.length === 1) return `M ${points[0].x.toFixed(1)} ${points[0].y.toFixed(1)}`;
+
+      // 相邻点斜率
+      const slopes = points.slice(1).map((p, i) => {
+        const prev = points[i];
+        return (p.y - prev.y) / (p.x - prev.x);
+      });
+
+      // 各点切线（Fritsch–Carlson 加权调和平均）
+      const tangents = points.map((p, i) => {
+        if (i === 0) return slopes[0];
+        if (i === points.length - 1) return slopes[slopes.length - 1] ?? 0;
+
+        const s0 = slopes[i - 1];
+        const s1 = slopes[i];
+        // 极值点或变号 → 切线归零，这是"单调"的关键（不过冲）
+        if (s0 === 0 || s1 === 0 || s0 * s1 < 0) return 0;
+
+        const d0 = p.x - points[i - 1].x;
+        const d1 = points[i + 1].x - p.x;
+        return (2 * d1 + d0 + d1 + 2 * d0)
+          / ((2 * d1 + d0) / s0 + (d1 + 2 * d0) / s1);
+      });
+
+      const segments = points.slice(1).map((p, i) => {
+        const prev = points[i];
+        const dx = p.x - prev.x;
+        const c1x = prev.x + dx / 3;
+        const c1y = prev.y + (tangents[i] * dx) / 3;
+        const c2x = p.x - dx / 3;
+        const c2y = p.y - (tangents[i + 1] * dx) / 3;
+        return `C ${c1x.toFixed(1)} ${c1y.toFixed(1)}, ${c2x.toFixed(1)} ${c2y.toFixed(1)}, ${p.x.toFixed(1)} ${p.y.toFixed(1)}`;
+      });
+
+      return `M ${points[0].x.toFixed(1)} ${points[0].y.toFixed(1)} ${segments.join(' ')}`;
+    };
+    const linePath = (pts) => monotonePath(pts);
+    // 面积图：沿曲线走一遍，再回到底边闭合
     const areaPath = (pts) =>
       `M ${pts[0].x.toFixed(1)} ${(padTop + plotH).toFixed(1)} ` +
-      pts.map(p => `L ${p.x.toFixed(1)} ${p.y.toFixed(1)}`).join(' ') +
+      monotonePath(pts).replace(/^M/, 'L') +
       ` L ${pts[pts.length - 1].x.toFixed(1)} ${(padTop + plotH).toFixed(1)} Z`;
 
-    // X 轴标签：按**实际像素宽度**决定能放几个，而不是写死"最多 6 个"。
+    // X 轴标签：**斜向 45° 排列**，兼顾"带日期"与"排得下"。
     //
-    // 历史问题：硬编码 count/6 让 1h 视图（12 桶 × 5 分钟）每 10 分钟才画一个刻度，
-    // 而 plotW≈700px 其实放得下。结果横轴读数比实际桶宽粗一倍，看起来
-    // "每 5 秒刷新但刻度 10 分钟才动"。
-    //
-    // 标签格式按窗口跨度自适应（这是能否放下的关键）：
-    //   - 单日内（1h/3h/6h/12h/today）：HH:MM（5 字符 ≈ 35px）→ 12 桶可每桶一个
-    //   - 跨天（24h/yesterday/3d/7d）：MM-DD + 必要时 HH:MM，避免分不清哪天
-    // 完整时间始终在 tooltip 里，轴标签只需够辨认。
+    // 为什么斜向：水平排列时每个标签占满自身文本宽度，带日期的
+    // `09-13 20:00`（11 字符 ≈ 67px）在 700px 里只能放 10 个；斜 45° 后
+    // 水平投影约为 文本宽度×cos45° + 行高×sin45° ≈ 47px，能放 14 个。
+    // 于是既保留了日期（跨午夜不混淆），又不必砍掉一半刻度。
+    // 时间序列图用斜向标签是通行做法，可读性也更好。
     const axisFmt = this.pickAxisLabelFormat(buckets);
     const labelOf = (b) => this.formatAxisLabel(b.timestamp, b.label, axisFmt);
 
     let xLabels = '';
-    // 标签宽度按**实际选定格式**估算，而不是一律按最坏情况——
-    // 否则 HH:MM（5 字符）也会按 11 字符预留宽度，白白少画一半刻度。
     const labelCharW = 5.4;
-    const labelChars = axisFmt === 'time' ? 5 : (axisFmt === 'date' ? 5 : 11);
-    const perLabelW = labelChars * labelCharW + 8;
+    const labelChars = axisFmt === 'date-time' ? 11 : 5;
+    const textW = labelChars * labelCharW;
+    // 斜 45° 的水平占宽 = 文本宽度·cos45 + 字号·sin45（行高贡献）
+    const slantDeg = 45;
+    const rad = (slantDeg * Math.PI) / 180;
+    const perLabelW = Math.max(14, textW * Math.cos(rad) + 10 * Math.sin(rad)) + 4;
     const maxLabels = Math.max(2, Math.floor(plotW / perLabelW));
     const labelStep = Math.max(1, Math.ceil(count / maxLabels));
+    // 斜向标签以锚点为右上角向左下延伸
+    const labelY = padTop + plotH + 14;
     for (let i = 0; i < count; i += labelStep) {
       const p = tokenPoints[i];
-      xLabels += `<text x="${p.x}" y="${height - 6}" text-anchor="middle" font-size="9" fill="currentColor" class="text-slate-400 font-mono">${this.escapeHtml(labelOf(p.b))}</text>`;
+      xLabels += `<text x="${p.x.toFixed(1)}" y="${labelY}" text-anchor="end" font-size="9"
+        fill="currentColor" class="text-slate-400 font-mono"
+        transform="rotate(-${slantDeg} ${p.x.toFixed(1)} ${labelY})">${this.escapeHtml(labelOf(p.b))}</text>`;
     }
 
     // 双轴刻度（各 3 档：0 / 中 / 最大）
