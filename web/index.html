@@ -781,8 +781,9 @@ resp = client.chat.completions.create(
               </div>
             </div>
 
-            <!-- 数据更新时间（后端 last_updated） -->
+            <!-- 数据更新时间（后端 last_updated）+ 刷新频率提示 -->
             <div id="usage-last-updated" class="text-[11px] text-slate-400"></div>
+            <div id="usage-refresh-hint" class="text-[11px] text-amber-600 dark:text-amber-400 leading-tight"></div>
 
             <!-- 图表容器：双 Y 轴，稍高一些便于看清两条线 -->
             <div id="usage-chart-container" class="w-full h-56 relative flex items-end">

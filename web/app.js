@@ -1863,6 +1863,8 @@ class WorkBuddyApp {
     this.autoRefreshSeconds = sec;
     localStorage.setItem('wb_usage_autorefresh', String(sec));
     this.restartAutoRefresh();
+    // 刷新频率变了，提示文案要立刻跟上（否则会残留上一档的数字）
+    this.renderRefreshHint();
   }
 
   restartAutoRefresh() {
@@ -1994,9 +1996,16 @@ class WorkBuddyApp {
     if (elUpdated) {
       const t = this.fmtTime(data.last_updated);
       const step = data.bucket_seconds ? this.formatBucketStep(data.bucket_seconds) : '';
+
+      // 记住桶宽，供刷新频率变化时重算提示（不必等下次拉数据）
+      this.lastBucketSeconds = data.bucket_seconds || 0;
+
       elUpdated.textContent = [t ? `数据更新于 ${t}` : '', step ? `分桶粒度：${step}` : '']
         .filter(Boolean).join(' · ');
     }
+
+    // 刷新频率 vs 桶宽的提示单独渲染，切换刷新档位时能立即更新
+    this.renderRefreshHint();
 
     // 趋势图表：以积分为主指标
     this.renderUsageChart(data.time_series || []);
@@ -2098,6 +2107,26 @@ class WorkBuddyApp {
     return `${p(d.getMonth() + 1)}-${p(d.getDate())} ${p(d.getHours())}:${p(d.getMinutes())}:${p(d.getSeconds())}`;
   }
 
+  // renderRefreshHint 渲染"刷新频率 vs 桶宽"的说明。
+  //
+  // 为什么需要：自动刷新可能远快于桶推进速度。1h 视图桶宽 5 分钟，若每 5 秒
+  // 刷新一次，要走满一格需要 60 次刷新——期间图表看起来"没动"是正常的
+  // （当前那个桶在同一个位置被不断累加）。不讲清楚会被误认为数据没更新。
+  renderRefreshHint() {
+    const el = document.getElementById('usage-refresh-hint');
+    if (!el) return;
+    const bucketSec = this.lastBucketSeconds || 0;
+    const refreshSec = this.autoRefreshSeconds || 0;
+    // 仅当刷新明显快于桶推进（4 倍以上）时才提示，否则会显得啰嗦
+    if (!refreshSec || !bucketSec || bucketSec <= refreshSec * 4) {
+      el.textContent = '';
+      return;
+    }
+    const step = this.formatBucketStep(bucketSec);
+    const ratio = Math.round(bucketSec / refreshSec);
+    el.textContent = `提示：每 ${refreshSec} 秒刷新，但分桶粒度是 ${step} —— 当前桶正在累积，约 ${ratio} 次刷新后才走满一格。图表暂时看不出移动属正常。`;
+  }
+
   // formatBucketStep 把秒数步长转成人类可读（"5 分钟" / "1 小时" / "1 天"）
   formatBucketStep(sec) {
     if (!sec) return '';
@@ -2105,6 +2134,45 @@ class WorkBuddyApp {
     if (sec < 3600) return Math.round(sec / 60) + ' 分钟';
     if (sec < 86400) return Math.round(sec / 3600) + ' 小时';
     return Math.round(sec / 86400) + ' 天';
+  }
+
+  // pickAxisLabelFormat 按窗口跨度选择轴标签的紧凑程度。
+  // 返回 'date'（MM-DD）、'time'（HH:MM）或 'date-time'（MM-DD HH:MM）。
+  //
+  // 判据顺序：
+  //   1. 桶宽 >= 1 天（3d/7d）：每桶就是一整天，只画 MM-DD
+  //   2. 窗口不跨午夜（1h/3h/6h/12h/today/yesterday）：只画 HH:MM
+  //   3. 跨午夜（24h）：带日期，否则"09-14 与 09-13 的同一时刻"看起来一样
+  pickAxisLabelFormat(buckets) {
+    if (!buckets || buckets.length < 2) return 'time';
+    const first = buckets[0].timestamp;
+    const last = buckets[buckets.length - 1].timestamp;
+    if (!first || !last) return 'date-time';
+
+    // 1. 天级桶 → 只需日期
+    const stepSec = (last - first) / (buckets.length - 1);
+    if (stepSec >= 86400) return 'date';
+
+    // 2/3. 判是否跨午夜
+    const d0 = new Date(first * 1000);
+    const d1 = new Date(last * 1000);
+    const sameDay = d0.getFullYear() === d1.getFullYear()
+      && d0.getMonth() === d1.getMonth()
+      && d0.getDate() === d1.getDate();
+    return sameDay ? 'time' : 'date-time';
+  }
+
+  // formatAxisLabel 按选定格式渲染轴标签；解析失败时回落后端给的 label。
+  formatAxisLabel(ts, fallback, fmt) {
+    if (!ts) return fallback || '';
+    const d = new Date(ts * 1000);
+    if (isNaN(d.getTime())) return fallback || '';
+    const p = (n) => String(n).padStart(2, '0');
+    const date = `${p(d.getMonth() + 1)}-${p(d.getDate())}`;
+    const hm = `${p(d.getHours())}:${p(d.getMinutes())}`;
+    if (fmt === 'date') return date;
+    if (fmt === 'time') return hm;
+    return `${date} ${hm}`;
   }
 
   formatNumberCompact(num) {
@@ -2156,12 +2224,30 @@ class WorkBuddyApp {
       pts.map(p => `L ${p.x.toFixed(1)} ${p.y.toFixed(1)}`).join(' ') +
       ` L ${pts[pts.length - 1].x.toFixed(1)} ${(padTop + plotH).toFixed(1)} Z`;
 
-    // X 轴标签：最多 6 个，避免拥挤
+    // X 轴标签：按**实际像素宽度**决定能放几个，而不是写死"最多 6 个"。
+    //
+    // 历史问题：硬编码 count/6 让 1h 视图（12 桶 × 5 分钟）每 10 分钟才画一个刻度，
+    // 而 plotW≈700px 其实放得下。结果横轴读数比实际桶宽粗一倍，看起来
+    // "每 5 秒刷新但刻度 10 分钟才动"。
+    //
+    // 标签格式按窗口跨度自适应（这是能否放下的关键）：
+    //   - 单日内（1h/3h/6h/12h/today）：HH:MM（5 字符 ≈ 35px）→ 12 桶可每桶一个
+    //   - 跨天（24h/yesterday/3d/7d）：MM-DD + 必要时 HH:MM，避免分不清哪天
+    // 完整时间始终在 tooltip 里，轴标签只需够辨认。
+    const axisFmt = this.pickAxisLabelFormat(buckets);
+    const labelOf = (b) => this.formatAxisLabel(b.timestamp, b.label, axisFmt);
+
     let xLabels = '';
-    const labelStep = Math.max(1, Math.ceil(count / 6));
+    // 标签宽度按**实际选定格式**估算，而不是一律按最坏情况——
+    // 否则 HH:MM（5 字符）也会按 11 字符预留宽度，白白少画一半刻度。
+    const labelCharW = 5.4;
+    const labelChars = axisFmt === 'time' ? 5 : (axisFmt === 'date' ? 5 : 11);
+    const perLabelW = labelChars * labelCharW + 8;
+    const maxLabels = Math.max(2, Math.floor(plotW / perLabelW));
+    const labelStep = Math.max(1, Math.ceil(count / maxLabels));
     for (let i = 0; i < count; i += labelStep) {
       const p = tokenPoints[i];
-      xLabels += `<text x="${p.x}" y="${height - 6}" text-anchor="middle" font-size="9" fill="currentColor" class="text-slate-400 font-mono">${this.escapeHtml(p.b.label)}</text>`;
+      xLabels += `<text x="${p.x}" y="${height - 6}" text-anchor="middle" font-size="9" fill="currentColor" class="text-slate-400 font-mono">${this.escapeHtml(labelOf(p.b))}</text>`;
     }
 
     // 双轴刻度（各 3 档：0 / 中 / 最大）
