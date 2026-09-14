@@ -45,6 +45,12 @@ type Config struct {
 	// PromptText custom 模式下注入的系统提示词文本（来自 config.PromptText）。
 	PromptText string
 
+	// GlobalEnabled global realm 路由开关（config global.enabled，缺省 true）。
+	// handler 侧第三道闸（与 main 注入 auth 开关、upstream.GlobalEnabled 呼应）：
+	// false（显式逃生门）时即便 auth realm=global 也不提供 global: 模型名
+	// （modelList 不列 global 名单）。
+	GlobalEnabled bool
+
 	ConfigPath string // 配置文件路径，用于在线更新 API Key 并持久化
 	WebDir     string // WebUI 静态资源目录
 	// ConsolePassword 控制台登录密码；空 = 不启用登录（保持旧行为）。
@@ -66,9 +72,9 @@ const ServiceName = "workbuddy2api"
 
 // Handler 主路由。
 type Handler struct {
-	cfg          Config
-	mux          *http.ServeMux
-	degrade      degradeGate
+	cfg     Config
+	mux     *http.ServeMux
+	degrade degradeGate
 	mu           sync.RWMutex
 	usageTracker *UsageTracker
 	authGate     *authGate
@@ -174,12 +180,14 @@ func NewHandler(cfg Config) *Handler {
 	return h
 }
 
+// getAPIKey 读当前生效的 api_key（与 setAPIKey 配对，避免读写竞争）。
 func (h *Handler) getAPIKey() string {
 	h.mu.RLock()
 	defer h.mu.RUnlock()
 	return h.cfg.APIKey
 }
 
+// setAPIKey 更新 api_key 并持久化到 config.json。
 func (h *Handler) setAPIKey(newKey string) error {
 	h.mu.Lock()
 	h.cfg.APIKey = newKey
@@ -201,6 +209,7 @@ func (h *Handler) setAPIKey(newKey string) error {
 	return nil
 }
 
+// apiGetKey 读取当前密钥。
 func (h *Handler) apiGetKey(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, map[string]any{
 		"api_key": h.getAPIKey(),
@@ -208,6 +217,7 @@ func (h *Handler) apiGetKey(w http.ResponseWriter, r *http.Request) {
 	})
 }
 
+// apiSetKey 在线更新密钥并热生效。
 func (h *Handler) apiSetKey(w http.ResponseWriter, r *http.Request) {
 	var body struct {
 		APIKey string `json:"api_key"`
@@ -245,10 +255,9 @@ func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 
 func (h *Handler) withAuth(next http.HandlerFunc) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
-		apiKey := h.getAPIKey()
-		if apiKey != "" {
+		if key := h.getAPIKey(); key != "" {
 			authz := r.Header.Get("Authorization")
-			if !strings.HasPrefix(authz, "Bearer ") || strings.TrimPrefix(authz, "Bearer ") != apiKey {
+			if !strings.HasPrefix(authz, "Bearer ") || strings.TrimPrefix(authz, "Bearer ") != key {
 				writeOpenAIError(w, http.StatusUnauthorized, "invalid_api_key", "missing or invalid API key")
 				return
 			}
@@ -265,12 +274,19 @@ func (h *Handler) healthz(w http.ResponseWriter, r *http.Request) {
 	if !h.cfg.Pool.ServableNow() {
 		status = http.StatusServiceUnavailable
 	}
+	// realm_servable 域可服务维度：不改判活语义（存在性探活保持不变），
+	// 只新增 CN/global 各自可达性供双域部署运维观察（任一域不可用单独告警）。
+	realmServable := map[string]bool{
+		"cn":     h.cfg.Pool.ServableForRealm("cn"),
+		"global": h.cfg.Pool.ServableForRealm("global"),
+	}
 	// 恒无鉴权（负载均衡/编排探活只需 2xx/503 语义），身份靠 service 字段 + X-Service 头双保险。
 	w.Header().Set("X-Service", ServiceName)
 	writeJSON(w, status, map[string]any{
-		"healthy": healthy,
-		"total":   total,
-		"service": ServiceName,
+		"healthy":       healthy,
+		"total":         total,
+		"service":       ServiceName,
+		"realm_servable": realmServable,
 	})
 }
 
@@ -284,6 +300,8 @@ func (h *Handler) status(w http.ResponseWriter, r *http.Request) {
 	if redisMode == "" {
 		redisMode = "noop"
 	}
+	// realm_totals 按域分组的计数汇总（双 realm 并存时运维一眼看到各域可用性）：
+	// 只新增字段，既有 total/healthy/cooling/disabled/in_flight_full 汇总键不变（零回归）。
 	writeJSON(w, http.StatusOK, map[string]any{
 		"accounts":        h.cfg.Pool.List(),
 		"total":           total,
@@ -291,12 +309,30 @@ func (h *Handler) status(w http.ResponseWriter, r *http.Request) {
 		"cooling":         cooling,
 		"disabled":        disabled,
 		"in_flight_full":  inFlightFull,
+		"realm_totals": map[string]map[string]int{
+			"cn":     countsMapFrom(h.cfg.Pool.CountsDetailedForRealm("cn")),
+			"global": countsMapFrom(h.cfg.Pool.CountsDetailedForRealm("global")),
+		},
 		"sticky_sessions": sticky,
 		"redis_mode":      redisMode,
 	})
 }
 
-// 静态 CN 模型表（api-reference §5，动态接口失败时的回退）。
+// countsMapFrom 把 CountsDetailed 五元组编码为 /status realm_totals 的字段对象。
+func countsMapFrom(total, healthy, cooling, disabled, inFlightFull int) map[string]int {
+	return map[string]int{
+		"total":          total,
+		"healthy":        healthy,
+		"cooling":        cooling,
+		"disabled":       disabled,
+		"in_flight_full": inFlightFull,
+	}
+}
+
+// 静态 CN 模型表（api-reference §5，**动态拉取失败才用的兜底**，见 modelList）：
+// 动态接口成功时以动态结果优先（含真实 context_length/max_output_tokens）；
+// 本表全用 context_length=131072 只是兜底形态，不得理解为权威值。
+// 触底前提：fetchDynamicModels 返回空（拉取失败 / 负缓存 / 池中无健康 CN 号）。
 var staticModels = []map[string]any{
 	{"id": "glm-5.2", "object": "model", "created": 1753600000, "owned_by": "workbuddy", "context_length": 131072},
 	{"id": "glm-5.1", "object": "model", "created": 1753600000, "owned_by": "workbuddy", "context_length": 131072},
@@ -331,13 +367,21 @@ func (h *Handler) models(w http.ResponseWriter, r *http.Request) {
 	})
 }
 
+// globalModels 国际版（global realm）模型名名单（PLAN §7.2 附录 21 名）。
+// 同名名单的权威来源在 upstream.GlobalModelNames（探测 overlay 的静态基底），
+// 此处只在"无 global 账号 / 探测失败"时被 fetchGlobalModels 直接返回（零上游调用）。
+// 保留本别名引用，避免 handler 侧魔法数字与 upstream overlay 重复维护。
+var globalModels = upstream.GlobalModelNames
+
 // modelList 动态获取模型列表并包装成 OpenAI 格式（含 context_length）。
+// CN 模型输出统一加 "cn:" 前缀（gateway 路由协议，与 resolveModel 对称）。
+// 动态失败回退静态表；global.enabled=false（显式逃生门）时只列 CN（global 名单不出现）。
 func (h *Handler) modelList() []map[string]any {
+	out := make([]map[string]any, 0, len(staticModels)+len(globalModels))
 	if infos := h.fetchDynamicModels(); len(infos) > 0 {
-		out := make([]map[string]any, 0, len(infos))
 		for _, mi := range infos {
 			entry := map[string]any{
-				"id":                mi.ID,
+				"id":                "cn:" + mi.ID,
 				"object":            "model",
 				"created":           1753600000,
 				"owned_by":          "workbuddy",
@@ -349,13 +393,75 @@ func (h *Handler) modelList() []map[string]any {
 			}
 			out = append(out, entry)
 		}
-		return out
+	} else {
+		for _, m := range staticModels {
+			e := make(map[string]any, len(m)+1)
+			for k, v := range m {
+				e[k] = v
+			}
+			if id, ok := m["id"].(string); ok {
+				e["id"] = "cn:" + id
+			}
+			out = append(out, e)
+		}
 	}
-	return staticModels
+	// global 模型名单：仅 GlobalEnabled=true 时列出（逃生门）。
+	// 名单 = 探测结果 ∪ §7.2 静态（fetchGlobalModels 内合并去重）；无 global 账号时
+	// 直接静态名单且零上游调用。
+	if h.cfg.GlobalEnabled {
+		for _, id := range h.fetchGlobalModels() {
+			out = append(out, map[string]any{
+				"id":             "global:" + id,
+				"object":         "model",
+				"created":        1753600000,
+				"owned_by":       "workbuddy",
+				"context_length": 131072,
+			})
+		}
+	}
+	return out
+}
+
+// fetchGlobalModels 返回 global 模型名单（探测 ∪ 静态 overlay，去重）。
+// 与 fetchDynamicModels（CN 侧）同语义不同归位：缓存/失败回落封在 upstream.FetchGlobalModels
+// （内部 1h + 5min 负缓存）。本方法只负责"何时探测"：
+//   - 池中无 global 账号 → 直接静态名单（不发起上游调用）；
+//   - 有 global 账号 → 单账号 Pick（global 域谓词），交 upstream 探测并合并。
+//
+// GlobalEnabled=false 时 modelList 已不进入本分支（逃生门在调用方 gate）。
+func (h *Handler) fetchGlobalModels() []string {
+	acct := h.cfg.Pool.PickExcludingForRealm(nil, "", "global")
+	if acct == nil {
+		return globalModels
+	}
+	return h.cfg.Upstream.FetchGlobalModels(acct)
+}
+
+// rewriteModel 把 outbound chat body 的 model 字段替换为 bare（保留其余字段原样）。
+// 仅当 bare != 原 model 时由 chatCompletions 调用；body 不可解析时原样返回（不二次错误化）。
+func rewriteModel(body []byte, bare string) []byte {
+	if len(body) == 0 || bare == "" {
+		return body
+	}
+	var obj map[string]any
+	if err := json.Unmarshal(body, &obj); err != nil {
+		return body
+	}
+	if cur, ok := obj["model"].(string); !ok || cur == bare {
+		return body
+	}
+	obj["model"] = bare
+	out, err := json.Marshal(obj)
+	if err != nil {
+		return body
+	}
+	return out
 }
 
 // fetchDynamicModels 从池中任一健康账号拉模型列表（含 contextWindow/maxTokens），缓存 1h。
 // 拉取失败记录时间戳进入 5min 负缓存，冷却期内直接用静态表，避免反复打上游。
+// 只从 CN realm 账号拉取（PickExcludingForRealm(nil,"","cn")）：全局账号的模型列表
+// 未必与 CN 一致，动态模型表只服务 CN 前缀（global 用内置静态名单）。
 func (h *Handler) fetchDynamicModels() []upstream.ModelInfo {
 	dynamicModelsCache.RLock()
 	if len(dynamicModelsCache.ids) > 0 && time.Since(dynamicModelsCache.fetched) < dynamicModelsTTL {
@@ -370,7 +476,7 @@ func (h *Handler) fetchDynamicModels() []upstream.ModelInfo {
 	}
 	dynamicModelsCache.RUnlock()
 
-	acct := h.cfg.Pool.Pick()
+	acct := h.cfg.Pool.PickExcludingForRealm(nil, "", "cn")
 	if acct == nil {
 		return nil
 	}
@@ -421,6 +527,11 @@ func (h *Handler) chatCompletions(w http.ResponseWriter, r *http.Request) {
 	}
 	_ = json.Unmarshal(body, &peek)
 
+	// realm 前缀解析（D6）：model 名可能带 "[realm:]" 前缀。剥出 realm + bareModel，
+	// bareModel 用于选号/粘性/账本/出站 body 重写（前缀是网关侧路由协议，上游只认裸名）。
+	// 裸名 → ("cn", 原串)，CN 现状零回归。
+	realm, bareModel := resolveModel(peek.Model)
+
 	// 请求级统计：出口即打一行表格日志（任何路径都会走到）。
 	st := newChatStat(time.Now(), body, peek.Stream)
 	defer st.done()
@@ -436,8 +547,12 @@ func (h *Handler) chatCompletions(w http.ResponseWriter, r *http.Request) {
 	if h.cfg.Session != nil {
 		sessKey = session.ExtractKey(body)
 		if sessKey != "" {
-			// 用 peek.Model（缺省为空串）而非 st.model（缺省为 "-"）：
-			// 模型名参与成本账本与选号过滤，"-" 会污染成不存在的模型键。
+			// 传给 ResolveForModel 的是**完整**模型名（peek.Model，含 realm 前缀）。
+			// 粘性命中校验走 injected AvailableForModel 闭包 → 闭包内部 resolveModel 剥前缀
+			// 得 realm+bare，再按 realm 过滤可用集合。若传已剥前缀的 bareModel，闭包对裸名
+			// 恒剥出 realm=cn，跨 realm 粘性会话会被错误钉回 CN 集合；完整前缀才能让
+			// 闭包正确过滤到 global 集合（见 cmd/server/wiring.go realmAwareAvailableForModel）。
+			// 模型名也参与成本账本与选号过滤，不能用 "-" 占位污染模型键。
 			if uid, ok := h.cfg.Session.ResolveForModel(sessKey, peek.Model); ok {
 				stickyUID = uid
 			}
@@ -485,20 +600,26 @@ func (h *Handler) chatCompletions(w http.ResponseWriter, r *http.Request) {
 		degradedApplied = true
 	}
 
+	// outbound model 名重写为 bareModel（D6）：realm 前缀是网关侧路由协议，
+	// 上游不认前缀（global 账号也请求裸模型名）。裸名时 bareModel==peek.Model 恒等。
+	if bareModel != peek.Model {
+		body = rewriteModel(body, bareModel)
+	}
+
 	for i := 0; i < h.cfg.MaxRotate; i++ {
 		// 选号：粘性号优先（PickByUIDForModel 已校验该模型可用性 + 在途未满），否则普通轮换。
 		var acct *auth.Auth
 		if stickyUID != "" {
-			acct = h.cfg.Pool.PickByUIDForModel(stickyUID, peek.Model)
-			if acct == nil {
-				// 粘性号在当前模型不可用（冷却/占满/该模型被 6004 限额）→ 解绑，本次回落普通轮换。
+			acct = h.cfg.Pool.PickByUIDForModel(stickyUID, bareModel)
+			if acct == nil || (realm != "" && acct.Realm() != realm) {
+				// 粘性号在当前模型不可用（冷却/占满/该模型被 6004 限额）或 realm 不符 → 解绑。
 				unbindSticky()
 			}
 		}
 		if acct == nil {
-			// 模型感知选号：请求携带 model 时启用 6004 模型级冷却豁免
-			// （PickExcludingForModel 内部当 model 为空时即退化为 PickExcluding）。
-			acct = h.cfg.Pool.PickExcludingForModel(tried, peek.Model)
+			// 模型感知 + realm 感知选号：请求携带 model 时启用 6004 模型级冷却豁免，
+			// realm 谓词过滤跨域账号（PickExcludingForModel 内部 model 空即退化 PickExcluding）。
+			acct = h.cfg.Pool.PickExcludingForRealm(tried, bareModel, realm)
 		}
 		if acct == nil {
 			st.status = http.StatusServiceUnavailable
@@ -531,6 +652,7 @@ func (h *Handler) chatCompletions(w http.ResponseWriter, r *http.Request) {
 				fail(acct.UID)
 				continue
 			}
+			acct.BackfillRealm() // 老 auth 空 realm → 落盘前补标识（幂等：已有不动）
 			if err := acct.SaveAtomic(); err != nil {
 				// 刷新成功但落盘失败：下次启动会用旧 token，必须暴露
 				log.Printf("ERR: [server] chat refresh uid=%s: save auth failed: %v", logfmt.UID8(acct.UID), err)
@@ -557,7 +679,7 @@ func (h *Handler) chatCompletions(w http.ResponseWriter, r *http.Request) {
 			kind := upstream.Classify(status, string(respBody))
 			// 内容拦截误报（passthrough 模式首遇）：判定为 system 指纹误报，
 			// 触发降级到次日 00:00 CST，换 Degraded 中性提示词同请求内重试。
-			// 第二次仍被拦（用户内容本身触发审核）→ 走既有错误路径返回客户端。
+			// 第二次仍被拦（用户内容本身触发审核）→ 回内容防火墙错误（见下分支）。
 			// 内容问题非账号问题：applyErrorPolicy 不罚账号（见 ErrContentBlocked 分支）。
 			if kind == upstream.ErrContentBlocked && h.cfg.PromptMode == "passthrough" && !degradedApplied {
 				h.degrade.Trigger()
@@ -568,8 +690,20 @@ func (h *Handler) chatCompletions(w http.ResponseWriter, r *http.Request) {
 				log.Printf("WARN: [server] content-blocked (likely fingerprint false positive) -> degraded prompt retry")
 				continue
 			}
+			if kind == upstream.ErrContentBlocked {
+				// 内容命中网关内容防火墙：立即回客户端，**不轮转**、不暴露账号/冷却/上游错误码
+				// （此前会落到 503 no_healthy_account + lastErr 泄露 11128 与账号语义）。
+				// 不罚账号（ErrContentBlocked 分支无冷却/熔断/NoteError），但 content_blocked
+				// 是本请求的终态——换任何账号都会撞同一审核，轮转纯属浪费时间。
+				h.applyErrorPolicy(acct.UID, kind, string(respBody), bareModel)
+				fail(acct.UID)
+				msg := upstream.ContentBlockedClientMessage(string(respBody))
+				writeOpenAIError(w, http.StatusBadRequest, "content_blocked", msg)
+				st.status = http.StatusBadRequest
+				return
+			}
 			lastErr = &upstream.Error{Kind: kind, Status: status, Msg: string(respBody)}
-			h.applyErrorPolicy(acct.UID, kind, string(respBody), peek.Model)
+			h.applyErrorPolicy(acct.UID, kind, string(respBody), bareModel)
 			fail(acct.UID)
 			continue
 		}
@@ -585,35 +719,15 @@ func (h *Handler) chatCompletions(w http.ResponseWriter, r *http.Request) {
 			stats := newChatStatsReaderSince(rc, st.start)
 			_ = upstream.Stream(w, stats)
 			st.ttfb = stats.TTFB()
-			compToks, hasToks := stats.Tokens()
-			st.toks = compToks
+			st.toks, _ = stats.Tokens()
 			// 成本账本：末帧 usage 带 credit 与 token 总数时记录实测单价，
 			// 供下次选号把免费/便宜的号排在前面。
-			credit, hasCredit := stats.Credit()
-			if hasCredit {
-				h.cfg.Pool.NoteModelCost(acct.UID, peek.Model, credit, stats.TotalTokens())
-			}
-			// 用量统计跟踪
-			if h.usageTracker != nil {
-				actualComp := compToks
-				if !hasToks || actualComp < 0 {
-					actualComp = 0
-				}
-				actualPrompt := stats.prompt
-				actualCredit := 0.0
-				if hasCredit {
-					actualCredit = credit
-				}
-				h.usageTracker.Record(UsageRecord{
-					Timestamp:        time.Now().Unix(),
-					Model:            peek.Model,
-					UID:              acct.UID,
-					PromptTokens:     actualPrompt,
-					CompletionTokens: actualComp,
-					TotalTokens:      stats.TotalTokens(),
-					Credit:           actualCredit,
-					DurationMS:       time.Since(st.start).Milliseconds(),
-				})
+			if credit, ok := stats.Credit(); ok {
+				h.cfg.Pool.NoteModelCost(acct.UID, bareModel, credit, stats.TotalTokens())
+			} else if _, hasUsage := stats.Tokens(); hasUsage {
+				// R9(c) 防护观测：usage 存在但 credit 缺失（如 global SSE 末帧未带 credit）。
+				// 不算合法成本观测（缺失≠0），仅记一条 WARN 协助排障，绝不写入账本。
+				log.Printf("WARN: [server] stream usage without credit uid=%s model=%s (no cost observation)", logfmt.UID8(acct.UID), bareModel)
 			}
 			rc.Close()
 			return
@@ -628,32 +742,10 @@ func (h *Handler) chatCompletions(w http.ResponseWriter, r *http.Request) {
 		}
 		writeJSON(w, http.StatusOK, resp)
 		st.status = http.StatusOK
-		compToks := completionTokens(resp)
-		st.toks = compToks
-		credit, total, ok := usageCreditTotal(resp)
-		if ok {
-			h.cfg.Pool.NoteModelCost(acct.UID, peek.Model, credit, total)
-		}
-		// 用量统计跟踪
-		if h.usageTracker != nil {
-			actualComp := compToks
-			if actualComp < 0 {
-				actualComp = 0
-			}
-			actualPrompt := total - actualComp
-			if actualPrompt < 0 {
-				actualPrompt = 0
-			}
-			h.usageTracker.Record(UsageRecord{
-				Timestamp:        time.Now().Unix(),
-				Model:            peek.Model,
-				UID:              acct.UID,
-				PromptTokens:     actualPrompt,
-				CompletionTokens: actualComp,
-				TotalTokens:      total,
-				Credit:           credit,
-				DurationMS:       time.Since(st.start).Milliseconds(),
-			})
+		st.toks = completionTokens(resp)
+		// 成本账本（非流式）：从聚合响应的 usage 取 credit 与 token 总数。
+		if credit, total, ok := usageCreditTotal(resp); ok {
+			h.cfg.Pool.NoteModelCost(acct.UID, bareModel, credit, total)
 		}
 		return
 	}
@@ -667,7 +759,7 @@ func (h *Handler) chatCompletions(w http.ResponseWriter, r *http.Request) {
 
 // applyErrorPolicy 按错误分类对账号施加冷却/禁用/熔断策略（最终版状态机）。
 // kind 是唯一权威分类（来自 upstream.Classify），此处不再按原始 status 二次判断。
-// 仅在 chatCompletions 轮转循环内调用：调用方已准备好 lastErr 并打算 continue 换号。
+// 仅在 chatCompletions 轮转循环内调用：内容拦截会立即 400 返回，其余种类 continue 换号。
 //
 // 七条路径，各司其职：
 //   - ErrHardCredit → CooldownUntilTomorrow4AM：即时硬冷却到次日 04:00（等签到恢复）。
@@ -676,7 +768,8 @@ func (h *Handler) chatCompletions(w http.ResponseWriter, r *http.Request) {
 //     封顶 soft_rate_max，记录触发模型供切模型豁免）。
 //   - ErrNotFound → Cooldown(CoolSoft, notFoundCooldown 固定 60s)：短冷却防雪崩，不随 soft_rate 退避。
 //   - ErrSessionDead → Disable：session 死亡，永久禁用（需人工重登）。
-//   - ErrContentBlocked → 不罚账号（无冷却/熔断/NoteError），passthrough 模式走降级重试。
+//   - ErrContentBlocked → 不罚账号（无冷却/熔断/NoteError）；passthrough 首遇触发
+//     降级重试，最终仍拦则回 400 content_blocked（防火墙文案，不含账号/错误码）。
 //   - ErrBadParams → 不罚账号（无冷却/熔断/NoteError，同 ErrContentBlocked 待遇），但仍轮转。
 //   - ErrServer → NoteError：喂单一连续失败计数器 fails + 累计错误 errTotal，
 //     达到 breakerThreshold 触发熔断（指数退避）。
@@ -712,12 +805,27 @@ func (h *Handler) applyErrorPolicy(uid string, kind upstream.ErrKind, body, mode
 		// 404 短冷却（软冷却），防雪崩。固定 notFoundCooldown，不随 soft_rate 退避：
 		// 偶发路径缺失不是限流信号，不该按限流惩罚升级。
 		h.cfg.Pool.Cooldown(uid, pool.CoolSoft, notFoundCooldown, "upstream 404")
+	case upstream.ErrAccountFault:
+		// 账号级授权/配额故障按 msg 分野（口径与 Classify 的 accountFaultMarkers 一致）：
+		//   - "request illegal"（code 11140）→ 账号级**授权封禁**：软冷却到期也不会自动
+		//     恢复（需重新 OAuth 登录），到期后重新选号只会再撞 403 浪费一次轮换——
+		//     硬禁用（Disable），不再参与选号。/status 以 disabled + disabled_reason 呈现。
+		//   - 14017（trial not activated）→ register 未完成，补完 register 后可能自愈，
+		//     **保持软冷却**（禁用会让用户补完 register 后仍无法用）。
+		// 两条路径对坏号都立刻换号（同一请求轮转出池），只是后续可恢复性不同。
+		// 大小写不敏感（与 Classify 的 marker 匹配同口径）。
+		if strings.Contains(strings.ToLower(body), "request illegal") {
+			h.cfg.Pool.Disable(uid, "account banned by upstream (11140 request illegal), re-login required")
+			return
+		}
+		h.cfg.Pool.Cooldown(uid, pool.CoolSoft, h.cfg.SoftCooldown, "account fault (14017)")
 	case upstream.ErrServer:
 		// 5xx 上游故障：Classify 已把 ≥500 判为 ErrServer，在此喂熔断计数（不再手写 status>=500）。
 		h.cfg.Pool.NoteError(uid)
 	case upstream.ErrContentBlocked:
-		// 内容策略拦截（误报）：内容问题非账号问题，不罚账号（无冷却/熔断/NoteError）。
-		// passthrough 模式由 chatCompletions 内降级重试处理；custom 模式本不会到此分支。
+		// 内容策略拦截：内容问题非账号问题，不罚账号（无冷却/熔断/NoteError）。
+		// passthrough 首遇由 chatCompletions 内降级重试处理；最终仍拦则回 400
+		// content_blocked（防火墙文案），不再轮转、不暴露账号/冷却/错误码。
 	case upstream.ErrBadParams:
 		// 请求体解析失败（400 + Unmarshal chat params failed / 11101）：发给上游的 body
 		// 有问题（网关截断已由 413 消灭，剩余为客户端畸形 JSON）。换了账号照样 400，

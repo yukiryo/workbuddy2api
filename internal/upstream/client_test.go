@@ -50,6 +50,15 @@ func TestClassify(t *testing.T) {
 		{400, `Unmarshal chat params failed`, ErrBadParams},
 		{400, `{"code":11101,"msg":"x"}`, ErrBadParams},
 		{200, `quota exceeded`, ErrHardCredit},
+		// 账号级授权/配额故障（与 429 一起纳入轮换）：11140 request illegal = auth_forbidden
+		// 风控（需重登），14017 = quota_not_activated（试用未激活，需完成 register）。修复前
+		// 11140 走 4xx → ErrClient 只换号不罚，坏号留在池内被反复选中刷风控。
+		// 注意：11140 不按 code 单独判定——该 code 也承载 rate-limiting 软限流文案
+		// （上方 {200, "code":11140 rate-limiting} 必须仍是 ErrSoftRate），只能靠 msg 区分。
+		{403, `{"error":{"data":{"code":11140,"msg":"request illegal"}}}`, ErrAccountFault},
+		{403, `request illegal`, ErrAccountFault},
+		{429, `{"error":{"data":{"code":14017,"msg":"The trial version is not yet activated. Please log out of your current account and log in again to activate it immediately and start your free trial."}}}`, ErrAccountFault},
+		{400, `{"code":14017,"msg":"trial not activated"}`, ErrAccountFault},
 		// session 死亡优先于限流文案（401+12153 需人工重登，短冷却无意义）。
 		{401, `{"code":12153,"msg":"Offline user session not found, rate limit"}`, ErrSessionDead},
 		{401, `Offline user session not found`, ErrSessionDead},
@@ -62,6 +71,35 @@ func TestClassify(t *testing.T) {
 	for _, c := range cases {
 		if got := Classify(c.status, c.body); got != c.want {
 			t.Errorf("Classify(%d,%q)=%v want %v", c.status, c.body, got, c.want)
+		}
+	}
+}
+
+// TestContentBlockedClientMessage 内容拦截把上游 body 改写成防火墙口径：
+// 括号填分类关键词（由 body 抽出，抽不到回「违禁词」），绝不泄露上游 code/账号/upstream 字样。
+func TestContentBlockedClientMessage(t *testing.T) {
+	cases := []struct {
+		body    string
+		keyword string
+	}{
+		{`{"code":11128,"msg":"blocked by security policy"}`, "违禁词"},
+		{`{"code":"11128","msg":"blocked by security policy"}`, "违禁词"},
+		{`Illegal API invocation from an unapproved channel`, "违禁词"},
+		{`{"code":11128,"msg":"content contains NSFW material"}`, "nsfw"},
+		{`{"msg":"命中色情内容"}`, "色情"},
+		{`violence detected`, "violence"},
+		{"", "违禁词"},
+	}
+	for _, c := range cases {
+		got := ContentBlockedClientMessage(c.body)
+		want := fmt.Sprintf("触发网站风控违禁词，无法调用模型：内容命中网关内容防火墙规则[%s]，已被拦截。请修改内容后重试。", c.keyword)
+		if got != want {
+			t.Errorf("ContentBlockedClientMessage(%q)=\n%q\nwant %q", c.body, got, want)
+		}
+		for _, leak := range []string{"11128", "account", "accounts", "账号", "upstream", "cooling", "no_healthy"} {
+			if strings.Contains(strings.ToLower(got), leak) {
+				t.Errorf("client message must not leak %q: %s", leak, got)
+			}
 		}
 	}
 }
@@ -340,6 +378,91 @@ func TestChatStreamReadsMultipleChunksOverRealTransport(t *testing.T) {
 	}
 	if strings.Contains(got, "context canceled") {
 		t.Fatalf("body read hit context canceled, got %q", got)
+	}
+}
+
+// TestResourceSummaryAggregation 断言 ResourceSummary 聚合口径：
+// remain 取 Cycle 期剩余、size 取 CycleSize（TotalDosage 作 size 下限）、used 派生。
+func TestResourceSummaryAggregation(t *testing.T) {
+	c := testClient(func(r *http.Request) (*http.Response, error) {
+		if !strings.HasSuffix(r.URL.Path, "/v2/billing/meter/get-user-resource") {
+			return nil, errors.New("wrong path: " + r.URL.Path)
+		}
+		return jsonResp(200, `{"code":0,"data":{"Response":{"Data":{"TotalDosage":3000,"Accounts":[
+			{"PackageName":"签到包","CapacitySize":2000,"CapacityRemain":1200,"CapacityUsed":800,"CycleCapacitySize":2000,"CycleCapacityRemain":1200,"CycleCapacityUsed":800},
+			{"PackageName":"体验包","CapacitySize":1000,"CapacityRemain":300,"CapacityUsed":700,"CycleCapacitySize":1000,"CycleCapacityRemain":300,"CycleCapacityUsed":700}
+		]}}}}`), nil
+	})
+	remain, used, size, packs, err := c.ResourceSummary(&auth.Auth{AccessToken: "at", UID: "u1"})
+	if err != nil {
+		t.Fatalf("summary: %v", err)
+	}
+	if remain != 1500 || size != 3000 {
+		t.Errorf("summary remain=%d size=%d want 1500/3000 (TotalDosage 作 size 下限)", remain, size)
+	}
+	// used = TotalDosage(3000) - remain(1500) = 1500。
+	if used != 1500 {
+		t.Errorf("used=%d want 1500", used)
+	}
+	if packs != 2 {
+		t.Errorf("packs=%d want 2", packs)
+	}
+}
+
+// TestResourceSummaryGlobalRealm 断言 global 账号走 global billing base + /billing/meter/*
+// （无 /v2 前缀），且 404 时 fallback /v2——realm 感知双路径，供 cmd/credit 复用。
+func TestResourceSummaryGlobalRealm(t *testing.T) {
+	var billingCalls []string
+	billSrv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		billingCalls = append(billingCalls, r.URL.Path)
+		if r.URL.Path == "/billing/meter/get-user-resource" {
+			w.WriteHeader(404)
+			_, _ = w.Write([]byte(`{"code":404,"msg":"nope"}`))
+			return
+		}
+		w.WriteHeader(200)
+		_, _ = w.Write([]byte(`{"code":0,"data":{"Response":{"Data":{"Accounts":[
+			{"PackageName":"g","CycleCapacitySize":500,"CycleCapacityRemain":200,"CycleCapacityUsed":300}
+		]}}}}`))
+	}))
+	defer billSrv.Close()
+
+	auth.SetGlobalEnabled(true)
+	t.Cleanup(func() { auth.SetGlobalEnabled(true) })
+	c := &Client{
+		HTTP:              &http.Client{},
+		BillingBaseCN:     "https://billing.cn",
+		BillingBaseGlobal: strings.TrimSuffix(billSrv.URL, "/"),
+		GlobalEnabled:     true,
+	}
+	a := &auth.Auth{AccessToken: "at", UID: "g1", Domain: "www.workbuddy.ai"}
+	remain, used, size, packs, err := c.ResourceSummary(a)
+	if err != nil {
+		t.Fatalf("global summary: %v", err)
+	}
+	if remain != 200 || used != 300 || size != 500 || packs != 1 {
+		t.Errorf("global summary=%d/%d/%d/%d want 200/300/500/1", remain, used, size, packs)
+	}
+	if len(billingCalls) != 2 ||
+		billingCalls[0] != "/billing/meter/get-user-resource" ||
+		billingCalls[1] != "/v2/billing/meter/get-user-resource" {
+		t.Errorf("global billing fallback calls=%v", billingCalls)
+	}
+}
+
+// TestResourceSummaryCNUnchanged 零回归：CN 账号仍是 /v2/billing/meter/get-user-resource 单路径。
+func TestResourceSummaryCNUnchanged(t *testing.T) {
+	var calls []string
+	c := testClient(func(r *http.Request) (*http.Response, error) {
+		calls = append(calls, r.URL.Path)
+		return jsonResp(200, `{"code":0,"data":{"Response":{"Data":{"Accounts":[]}}}}`), nil
+	})
+	_, _, _, _, err := c.ResourceSummary(&auth.Auth{AccessToken: "at", UID: "cn1", Domain: "www.codebuddy.cn"})
+	if err != nil {
+		t.Fatalf("cn summary: %v", err)
+	}
+	if len(calls) != 1 || calls[0] != "/v2/billing/meter/get-user-resource" {
+		t.Errorf("cn billing calls=%v want single /v2 path", calls)
 	}
 }
 

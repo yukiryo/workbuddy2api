@@ -103,6 +103,22 @@ func (p *Pool) NoteError(uid string) {
 	}
 }
 
+// ModelCost 读取账号在某模型上的实测扣费观测（CostPer1k 与是否存在有效观测）。
+// 供测试/运维断言成本账本内容；无观测或观测过期（modelCostTTL）时 ok=false。
+func (p *Pool) ModelCost(uid, model string) (per1k float64, ok bool) {
+	p.mu.RLock()
+	defer p.mu.RUnlock()
+	e, exists := p.byUID[uid]
+	if !exists {
+		return 0, false
+	}
+	mc, ok := e.modelCostOf(model, time.Now())
+	if !ok {
+		return 0, false
+	}
+	return mc.CostPer1k, true
+}
+
 // NoteModelCost 记录一次实测扣费观测，更新该 (账号, 模型) 的成本账本。
 // credit 为上游 usage.credit（本次真实扣费），tokens 为本次请求的 token 总数
 // （prompt+completion，用于折算单位成本）。tokens<=0 时不记录：无法折算单价，
@@ -146,6 +162,9 @@ func (p *Pool) NoteModelCost(uid, model string, credit float64, tokens int) {
 // 二进制模型：清 fails + retryCount + breakerUntil；不碰 until/coolKind（那些是即时冷却，各自到期）。
 // 额外清 softStreak：成功是账号已恢复的最强证据，连续软限流计数就此归零、退避回到基数。
 // 同样清 sessionDeadFails：成功证明 session 未死（与 ClearSessionDead 语义一致）。
+// **不碰 modelCooldowns**：6004 模型级 limit 每模型独立计时，其他模型成功不得抹掉
+// 本模型的冷却截止（这正是"每模型独立"的语义）。模型级冷却只由到期/复活/账号级
+// 冷却（Cooldown/reviveCoolingLocked）清除。
 func (p *Pool) NoteSuccess(uid string) {
 	p.mu.Lock()
 	defer p.mu.Unlock()
@@ -272,10 +291,25 @@ func (p *Pool) PickByUID(uid string) *auth.Auth {
 // inFlightFull 是 healthy 的子集——healthy 里已达在途上限的账号数，供 /status 透出满载度。
 // 与 ServableNow 的区别见该函数注释。
 func (p *Pool) CountsDetailed() (total, healthy, cooling, disabled, inFlightFull int) {
+	return p.countsDetailedForRealm("")
+}
+
+// CountsDetailedForRealm 同 CountsDetailed，但仅统计 Realm()==realm 的账号；
+// realm=="" 退化为全池（现状语义，走同一遍历 helper 避免重复代码）。
+// 双 realm 共存时供 /status 按域分组暴露 CN/global 各自可用性。
+func (p *Pool) CountsDetailedForRealm(realm string) (total, healthy, cooling, disabled, inFlightFull int) {
+	return p.countsDetailedForRealm(realm)
+}
+
+// countsDetailedForRealm 是两函数共用的遍历实现；realm=="" 不加谓词。
+func (p *Pool) countsDetailedForRealm(realm string) (total, healthy, cooling, disabled, inFlightFull int) {
 	p.mu.RLock()
 	defer p.mu.RUnlock()
 	now := time.Now()
 	for _, e := range p.byUID {
+		if realm != "" && e.a.Realm() != realm {
+			continue
+		}
 		total++
 		switch {
 		case e.disabled:
@@ -298,14 +332,41 @@ func (p *Pool) CountsDetailed() (total, healthy, cooling, disabled, inFlightFull
 // 专供 /healthz 用，避免"全账号 healthy 但都占满"时探活误报 200 而 chat 返回 503 的口径裂缝。
 //
 // 模型级豁免（issue #31 的探活侧补齐）：6004 模型级软冷却中的账号（modelExempt 形态）
-// 对触发模型不可用、对其他模型仍可选——chat 的 healthyForModel 已按此放行切模型请求，
-// 探活必须同口径，否则"全号被 v4.1 限流但 glm 可用"时 chat 实际 200 而 /healthz 误报 503。
-// /healthz 无请求模型上下文，取"存在可服务模型"的存在性语义（与 chat 可达性等价）。
+// 对触发模型不可用、对其他模型仍可选，探活与 chat 必须同口径，否则"全号被某模型限流
+// 但换模型可用"时 chat 实际 200 而 /healthz 误报 503。chat 侧按请求模型细粒度判定
+// （healthyForModel：全账号健康且该模型不在独立冷却内才放行，模型豁免作用于选号），
+// 探活侧没有请求模型上下文，取「存在豁免形态」的存在性语义——豁免账号（未禁用、
+// 未熔断、存在模型级冷却条目）至少还剩触发模型之外的模型可用，ServableNow 计入。
+// 注意与 chat 判定在"账号级 until 冷却 + 模型豁免并存"时并不完全重合：modelExempt
+// 不检查 until，而 healthyForModel 会先判 until 再查模型冷却；该混合形态现实中不可达
+// （plain Cooldown 会清空 modelCooldowns，6004 不写 until），此处仅为探活存在性语义，
+// 不构成 chat 选号路径。
 func (p *Pool) ServableNow() bool {
 	p.mu.RLock()
 	defer p.mu.RUnlock()
 	now := time.Now()
 	for _, e := range p.byUID {
+		if p.inFlightFull(e) {
+			continue
+		}
+		if e.healthy(now) || e.modelExempt() {
+			return true
+		}
+	}
+	return false
+}
+
+// ServableForRealm 报告某 realm 是否可服务：存在至少一个该 realm 的 healthy 且未占满在途名额的账号。
+// 与 ServableNow 同口径（healthy 或模型豁免、排除 inFlightFull），仅叠加 Realm()==realm 谓词。
+// realm=="" 退化为 ServableNow（现状语义）。供 /healthz 按 realm 暴露 CN/global 各自可达性。
+func (p *Pool) ServableForRealm(realm string) bool {
+	p.mu.RLock()
+	defer p.mu.RUnlock()
+	now := time.Now()
+	for _, e := range p.byUID {
+		if realm != "" && e.a.Realm() != realm {
+			continue
+		}
 		if p.inFlightFull(e) {
 			continue
 		}
@@ -334,21 +395,27 @@ func (p *Pool) List() []Status {
 func (p *Pool) statusOf(uid string, e *entry) Status {
 	now := time.Now()
 	st := Status{
-		UID:             uid,
-		Nickname:        e.a.Nickname,
-		Credits:         e.credits,
-		Cooling:         now.Before(e.until) || now.Before(e.breakerUntil),
-		Reason:          e.reason,
-		Disabled:        e.disabled,
-		SuccessCount:    e.successCount,
-		ErrTotal:        e.errTotal,
-		LastSuccessTime: e.lastSuccess,
-		LastErrTime:     e.lastErr,
-		Until:           e.until,
-		SoftStreak:      e.softStreak,
-		InFlight:        int(e.inFlight.Load()),
-		BreakerFails:    e.fails,
-		BreakerUntil:    e.breakerUntil,
+		UID: uid,
+		// 限额台账（issue #36）：仅「带解析时间 6004 的模型级软冷却」仍在生效时非空，
+		// 每模型一行（modelCooldowns 内未到期的条目），多模型同时限流全部展示。
+		// 到期判据 = 该模型的独立冷却 until 未过；条件满足才输出，随到期自然消失，
+		// 普通软冷却（无模型级表）/硬冷却不产生台账（零回归）。
+		RateLimitedModels: p.rateLimitedModelsLocked(e, now),
+		Realm:             e.a.Realm(),
+		Nickname:          e.a.Nickname,
+		Credits:           e.credits,
+		Cooling:           now.Before(e.until) || now.Before(e.breakerUntil),
+		Reason:            e.reason,
+		Disabled:          e.disabled,
+		SuccessCount:      e.successCount,
+		ErrTotal:          e.errTotal,
+		LastSuccessTime:   e.lastSuccess,
+		LastErrTime:       e.lastErr,
+		Until:             e.until,
+		SoftStreak:        e.softStreak,
+		InFlight:          int(e.inFlight.Load()),
+		BreakerFails:      e.fails,
+		BreakerUntil:      e.breakerUntil,
 	}
 	if st.Disabled {
 		// 禁用账号透出禁用原因（运维看不到为什么死）。
@@ -363,6 +430,42 @@ func (p *Pool) statusOf(uid string, e *entry) Status {
 		st.CoolKind = e.coolKind.String()
 	}
 	return st
+}
+
+// rateLimitedModelsLocked 构建单账号的限额台账行，从 modelCooldowns 遍历输出——
+// 每模型一行（含该模型的独立 until + 上游原始 resetAt），多模型同时 6004 全部展示。
+// 有效期判据 = 该模型的独立冷却 until 未过；随到期自然消失（与 /status 观感一致）。
+// 无模型级冷却（普通软冷却/硬冷却）→ nil（零回归）。调用方必须已持有 p.mu。
+func (p *Pool) rateLimitedModelsLocked(e *entry, now time.Time) []RateLimitedModel {
+	if len(e.modelCooldowns) == 0 {
+		return nil
+	}
+	// 先排序模型名，保证 /status 输出稳定（map 遍历无序）。
+	models := make([]string, 0, len(e.modelCooldowns))
+	for m := range e.modelCooldowns {
+		models = append(models, m)
+	}
+	sort.Strings(models)
+	rows := make([]RateLimitedModel, 0, len(models))
+	for _, m := range models {
+		mc := e.modelCooldowns[m]
+		if !mc.Until.IsZero() && now.Before(mc.Until) {
+			row := RateLimitedModel{
+				Model:  m,
+				Until:  mc.Until,
+				Reason: mc.Reason,
+			}
+			// 上游原始重置墙钟：截断后 until==resetAt 时省略（omitempty），台账只显示真实恢复时刻。
+			if !mc.ResetAt.IsZero() && !mc.ResetAt.Equal(mc.Until) {
+				row.ResetAt = mc.ResetAt
+			}
+			rows = append(rows, row)
+		}
+	}
+	if len(rows) == 0 {
+		return nil
+	}
+	return rows
 }
 
 // ---------------------------------------------------------------------------
