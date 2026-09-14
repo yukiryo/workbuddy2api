@@ -22,6 +22,9 @@ class WorkBuddyApp {
     this.usageRecLimit = 200;
     this.usageRecOffset = 0;
     this.usageRecTotal = 0;
+    // 深度账号状态的缓存元信息（后端 cached / queried_at）
+    this.accountStatusCached = false;
+    this.accountStatusQueriedAt = '';
     // 用量自动刷新（秒；0 = 关闭）。默认 15 秒，与参考项目一致。
     const savedAuto = localStorage.getItem('wb_usage_autorefresh');
     this.autoRefreshSeconds = savedAuto === null ? 15 : (parseInt(savedAuto, 10) || 0);
@@ -313,6 +316,10 @@ class WorkBuddyApp {
         dot.className = 'w-2 h-2 rounded-full dot-healthy';
         text.textContent = '网关运行中';
         pingEl.textContent = `${latency} ms`;
+        // realm_servable 是后端权威判定"该域当前是否有可用账号"。
+        // 池里全是冷却/熔断号时 /healthz 仍 200（进程活着），
+        // 但实际不可服务——不提示的话用户会以为一切正常却调不通。
+        this.renderRealmServable(data);
         banner.classList.add('hidden');
 
         document.getElementById('stat-gateway-service').textContent = data.service || 'workbuddy';
@@ -327,6 +334,33 @@ class WorkBuddyApp {
       document.getElementById('conn-banner-text').textContent = 
         `无法连接到网关 ${this.gatewayUrl}，请检查路由器网络是否通畅或是否存在跨域拦截。`;
     }
+  }
+
+  // renderRealmServable 渲染各域的可服务状态。
+  //
+  // /healthz 的 realm_servable 与顶层 healthy 计数是**两个口径**：
+  //   healthy      = 状态机判定健康（不看在途）
+  //   servable     = 叠加在途名额后是否真能接请求（与 chat 的可达性对齐）
+  // 后者为 false 但前者 > 0 时，探活会 200 而实际调用 503 —— 这种裂缝必须提示。
+  renderRealmServable(hz) {
+    const el = document.getElementById('realm-servable-hint');
+    if (!el) return;
+    const rs = hz && hz.realm_servable;
+    if (!rs) { el.textContent = ''; return; }
+
+    const parts = [];
+    for (const realm of ['cn', 'global']) {
+      if (!(realm in rs)) continue;
+      parts.push(`${realm.toUpperCase()} ${rs[realm] ? '可服务' : '不可服务'}`);
+    }
+    if (!parts.length) { el.textContent = ''; return; }
+
+    // 任一域不可服务就标黄提示（全可服务时低调显示，不干扰）
+    const anyDown = Object.values(rs).some((v) => v === false);
+    el.className = anyDown
+      ? 'text-[10px] text-amber-600 dark:text-amber-400 font-mono'
+      : 'text-[10px] text-slate-400 font-mono';
+    el.textContent = parts.join(' · ') + (anyDown ? '（该域无可用账号，对应模型会 503）' : '');
   }
 
   // 2. 拉取账号池状态
@@ -462,11 +496,25 @@ class WorkBuddyApp {
       if (!res.ok || !data.success) throw new Error(data.message || `HTTP ${res.status}`);
 
       this.cachedAccountStatus = data.accounts || [];
+      // 后端告知本次是否为缓存命中。必须显示：深度查询要打上游，有缓存，
+      // 不标注的话用户会把陈旧配额当成实时值（这是误导）。
+      this.accountStatusCached = data.cached === true;
+      this.accountStatusQueriedAt = (data.accounts || []).find(a => a.queried_at)?.queried_at || '';
       // 把深度状态与池状态合并渲染（池状态字段来自 /status，此处补上配额等）
       this.renderAccountStatusGrid();
 
+      // 更新提示：明确"缓存命中"还是"刚刚查询"以及查询时刻
       const el = document.getElementById('accounts-updated');
-      if (el) el.textContent = `更新于 ${new Date().toLocaleTimeString('zh-CN')}`;
+      if (el) {
+        const q = this.fmtTime(this.accountStatusQueriedAt);
+        if (this.accountStatusCached) {
+          el.innerHTML = q
+            ? `<span class="text-amber-600 dark:text-amber-400">缓存数据（查询于 ${this.escapeHtml(q)}）</span> · 点「刷新全部」强制重查`
+            : `<span class="text-amber-600 dark:text-amber-400">缓存数据</span> · 点「刷新全部」强制重查`;
+        } else {
+          el.textContent = q ? `实时查询于 ${q}` : `更新于 ${new Date().toLocaleTimeString('zh-CN')}`;
+        }
+      }
     } catch (err) {
       if (grid) {
         grid.innerHTML = `<div class="col-span-full text-center py-12 text-rose-500 text-xs">
@@ -657,8 +705,8 @@ class WorkBuddyApp {
         <!-- 模型 -->
         ${modelsHtml}
 
-        <!-- 运行态 -->
-        <div class="pt-3 border-t border-slate-100 dark:border-slate-800/80 grid grid-cols-3 gap-2 text-center">
+        <!-- 运行态：4 格（含后端的权威 selectable 判定） -->
+        <div class="pt-3 border-t border-slate-100 dark:border-slate-800/80 grid grid-cols-4 gap-2 text-center">
           <div>
             <div class="text-[10px] text-slate-400">成功率</div>
             <div class="text-xs font-mono font-semibold text-slate-700 dark:text-slate-200">${this.successRate(acc)}</div>
@@ -670,6 +718,11 @@ class WorkBuddyApp {
           <div>
             <div class="text-[10px] text-slate-400">软冷却</div>
             <div class="text-xs font-mono font-semibold text-slate-700 dark:text-slate-200">${acc.soft_streak || 0}</div>
+          </div>
+          <div>
+            <!-- selectable 是后端权威判定（等价 healthy(now)），比前端从 state 推导更准 -->
+            <div class="text-[10px] text-slate-400">可选号</div>
+            <div class="text-xs font-mono font-semibold ${acc.selectable === false ? 'text-rose-500' : 'text-emerald-500'}">${acc.selectable === false ? '否' : '是'}</div>
           </div>
         </div>
 
@@ -840,6 +893,10 @@ class WorkBuddyApp {
       ? '需要重新登录'
       : (c.token_left_sec ? `剩余 ${this.formatDuration(c.token_left_sec)}` : '--');
 
+    // 凭证所属域：cn 与 global 账号混在一起时，光看昵称分不清是哪个域，
+    // 而域直接决定它服务哪些模型（global 走 global: 前缀的请求）。
+    const domainBadge = this.credentialDomainBadge(c.domain);
+
     return `
       <div class="p-4 flex items-center justify-between gap-4 hover:bg-slate-50 dark:hover:bg-slate-900/40 transition-colors">
         <div class="flex items-center gap-3 min-w-0">
@@ -850,12 +907,14 @@ class WorkBuddyApp {
             <div class="text-xs font-bold text-slate-800 dark:text-slate-100 flex items-center gap-2">
               <span class="truncate">${this.escapeHtml(c.nickname || '未命名账号')}</span>
               <span class="px-1.5 py-0.5 rounded text-[10px] font-semibold ${stateClass} flex-shrink-0">${stateText}</span>
+              ${domainBadge}
             </div>
             <div class="text-[10px] font-mono text-slate-400 truncate" title="${this.escapeHtml(c.file_name)}">
               ${this.escapeHtml(c.file_name)}
             </div>
             <div class="text-[10px] text-slate-400 mt-0.5 flex items-center gap-2 flex-wrap">
               <span>Token ${this.escapeHtml(tokenInfo)}</span>
+              ${c.expires_at ? `<span title="Token 过期绝对时刻（与日志对时间用）">至 ${this.escapeHtml(this.fmtTime(new Date(c.expires_at * 1000).toISOString()))}</span>` : ''}
               ${c.has_refresh ? '<span class="text-emerald-500">可自动续期</span>' : '<span class="text-amber-500">无 refreshToken</span>'}
               ${c.enterprise_id ? `<span>企业 ${this.escapeHtml(c.enterprise_id)}</span>` : '<span>个人</span>'}
             </div>
@@ -867,6 +926,20 @@ class WorkBuddyApp {
         </button>
       </div>
     `;
+  }
+
+  // credentialDomainBadge 按凭证域渲染角标（cn / global）。
+  // 域决定该账号服务哪族模型：global 账号只接 global: 前缀的请求，
+  // 与 CN 账号不可互换，故必须在列表里一眼可辨。
+  credentialDomainBadge(domain) {
+    const d = String(domain || '');
+    const isGlobal = /workbuddy|global/i.test(d) && !/codebuddy/i.test(d);
+    const cls = isGlobal
+      ? 'bg-violet-500/10 text-violet-500 border-violet-500/20'
+      : 'bg-sky-500/10 text-sky-500 border-sky-500/20';
+    const label = isGlobal ? 'GLOBAL' : 'CN';
+    return `<span class="px-1.5 py-0.5 rounded text-[10px] font-semibold border ${cls} flex-shrink-0"
+                  title="凭证域：${this.escapeHtml(d || '未知')}">${label}</span>`;
   }
 
   async deleteCredential(fileName, label) {
@@ -1070,21 +1143,27 @@ class WorkBuddyApp {
       ? ` <span class="opacity-75" title="${rlCount} 个模型限流中，账号本身仍可用">· ${rlCount} 模型限流</span>`
       : '';
 
+    // 状态文案**优先用后端给的 state_label**，消除前端重复映射。
+    // 历史教训：前端自己映射 state->文案，一旦与后端口径分叉就会
+    // 出现"后端说熔断、前端显示就绪"这类幽灵问题。只在后端未提供时兜底。
+    const label = (key, fallback) =>
+      (acc.state === key && acc.state_label) ? acc.state_label : fallback;
+
     switch (state) {
       case 'disabled':
-        return `<span class="px-2 py-0.5 rounded-full text-[10px] font-semibold bg-rose-500/10 text-rose-500">已停用</span>`;
+        return `<span class="px-2 py-0.5 rounded-full text-[10px] font-semibold bg-rose-500/10 text-rose-500">${this.escapeHtml(label('disabled', '已停用'))}</span>`;
       case 'breaker': {
         // 用 breaker_remaining_sec（熔断专用字段）；cool_remaining_sec 只表示账号级冷却，
         // 纯熔断时它是 0，用它会导致显示"熔断中"却没有剩余时间。
         const left = acc.breaker_remaining_sec ? this.formatDuration(acc.breaker_remaining_sec) : '';
-        return `<span class="px-2 py-0.5 rounded-full text-[10px] font-semibold bg-rose-500/10 text-rose-500">熔断中${left ? ' ' + left : ''}</span>`;
+        return `<span class="px-2 py-0.5 rounded-full text-[10px] font-semibold bg-rose-500/10 text-rose-500">${this.escapeHtml(label('breaker', '熔断中'))}${left ? ' ' + left : ''}</span>`;
       }
       case 'cooling': {
         const left = acc.cool_remaining_sec ? this.formatDuration(acc.cool_remaining_sec) : '';
-        return `<span class="px-2 py-0.5 rounded-full text-[10px] font-semibold bg-amber-500/10 text-amber-500">冷却中${left ? ' ' + left : ''}</span>`;
+        return `<span class="px-2 py-0.5 rounded-full text-[10px] font-semibold bg-amber-500/10 text-amber-500">${this.escapeHtml(label('cooling', '冷却中'))}${left ? ' ' + left : ''}</span>`;
       }
       default:
-        return `<span class="px-2 py-0.5 rounded-full text-[10px] font-semibold bg-emerald-500/10 text-emerald-500">就绪${rlSuffix}</span>`;
+        return `<span class="px-2 py-0.5 rounded-full text-[10px] font-semibold bg-emerald-500/10 text-emerald-500">${this.escapeHtml(label('ready', '就绪'))}${rlSuffix}</span>`;
     }
   }
 
@@ -2015,7 +2094,19 @@ class WorkBuddyApp {
       // 记住桶宽，供刷新频率变化时重算提示（不必等下次拉数据）
       this.lastBucketSeconds = data.bucket_seconds || 0;
 
-      elUpdated.textContent = [t ? `数据更新于 ${t}` : '', step ? `分桶粒度：${step}` : '']
+      // 窗口精确边界（后端 window_start/window_end）。图表标题只写"最近 24 小时"，
+      // 补上真实起止时刻能消除歧义——24h 是按整点对齐的，并非精确 86400 秒前。
+      let win = '';
+      if (data.window_start && data.window_end) {
+        const fmt = (sec) => {
+          const d = new Date(sec * 1000);
+          const p = (n) => String(n).padStart(2, '0');
+          return `${p(d.getMonth() + 1)}-${p(d.getDate())} ${p(d.getHours())}:${p(d.getMinutes())}`;
+        };
+        win = `窗口 ${fmt(data.window_start)} ~ ${fmt(data.window_end)}`;
+      }
+
+      elUpdated.textContent = [t ? `数据更新于 ${t}` : '', step ? `分桶粒度：${step}` : '', win]
         .filter(Boolean).join(' · ');
     }
 
