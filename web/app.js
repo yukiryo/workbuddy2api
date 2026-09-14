@@ -22,6 +22,12 @@ class WorkBuddyApp {
     this.usageRecLimit = 200;
     this.usageRecOffset = 0;
     this.usageRecTotal = 0;
+    // 用量自动刷新（秒；0 = 关闭）。默认 15 秒，与参考项目一致。
+    const savedAuto = localStorage.getItem('wb_usage_autorefresh');
+    this.autoRefreshSeconds = savedAuto === null ? 15 : (parseInt(savedAuto, 10) || 0);
+    this.autoRefreshTimer = null;
+    this.autoRefreshCountdown = null;
+    this.autoRefreshLeft = 0;
     this.usageRange = '24h';
     this.isFetching = false;
     this.chatHistory = [];
@@ -180,6 +186,13 @@ class WorkBuddyApp {
     // 按需加载：只在首次进入时拉数据，避免每次切 tab 都打上游
     if (tabName === 'usage') {
       this.fetchUsage();
+      // 同步自动刷新控件的选中值，并启动定时器
+      const sel = document.getElementById('usage-autorefresh');
+      if (sel) sel.value = String(this.autoRefreshSeconds || 0);
+      this.resumeAutoRefresh();
+    } else {
+      // 离开用量页就停掉定时器，避免在后台持续请求后端（路由器资源有限）
+      this.pauseAutoRefresh();
     }
     if (tabName === 'accounts') {
       this.fetchStatus();
@@ -1777,6 +1790,63 @@ class WorkBuddyApp {
   // ==========================================
   // 用量统计 (Usage Analytics) 模块
   // ==========================================
+  // ===== 用量面板：时间范围与自动刷新（对齐参考项目 codebuddy2api）=====
+
+  // setAutoRefresh 设置自动刷新间隔（秒，0 = 关闭）。
+  // 用 setInterval + 倒计时显示，切换间隔时重建定时器。
+  setAutoRefresh(seconds) {
+    const sec = parseInt(seconds, 10) || 0;
+    this.autoRefreshSeconds = sec;
+    localStorage.setItem('wb_usage_autorefresh', String(sec));
+    this.restartAutoRefresh();
+  }
+
+  restartAutoRefresh() {
+    if (this.autoRefreshTimer) {
+      clearInterval(this.autoRefreshTimer);
+      this.autoRefreshTimer = null;
+    }
+    if (this.autoRefreshCountdown) {
+      clearInterval(this.autoRefreshCountdown);
+      this.autoRefreshCountdown = null;
+    }
+    const sec = this.autoRefreshSeconds || 0;
+    const cd = document.getElementById('usage-countdown');
+    if (!sec) {
+      if (cd) cd.textContent = '';
+      return;
+    }
+    this.autoRefreshLeft = sec;
+    // 倒计时显示（每 250ms 刷新一次，避免秒数跳变观感差）
+    this.autoRefreshCountdown = setInterval(() => {
+      this.autoRefreshLeft = Math.max(0, this.autoRefreshLeft - 0.25);
+      const el = document.getElementById('usage-countdown');
+      if (el) el.textContent = Math.ceil(this.autoRefreshLeft) + 's';
+    }, 250);
+    // 到期拉取
+    this.autoRefreshTimer = setInterval(() => {
+      this.autoRefreshLeft = sec;
+      // 只在用量页可见时刷新，避免用户切走后仍在后台打后端
+      if (this.currentTab === 'usage') {
+        this.fetchUsage(this.usageRange || '24h');
+      }
+    }, sec * 1000);
+  }
+
+  // 离开用量页时暂停自动刷新（省掉无谓的后端请求与路由器负载）
+  pauseAutoRefresh() {
+    if (this.autoRefreshTimer) { clearInterval(this.autoRefreshTimer); this.autoRefreshTimer = null; }
+    if (this.autoRefreshCountdown) { clearInterval(this.autoRefreshCountdown); this.autoRefreshCountdown = null; }
+    const cd = document.getElementById('usage-countdown');
+    if (cd) cd.textContent = '';
+  }
+
+  resumeAutoRefresh() {
+    if ((this.autoRefreshSeconds || 0) > 0 && !this.autoRefreshTimer) {
+      this.restartAutoRefresh();
+    }
+  }
+
   setUsageRange(range) {
     this.usageRange = range;
     this.usageRecOffset = 0; // 换时间范围回到明细第一页
@@ -1791,10 +1861,14 @@ class WorkBuddyApp {
     });
     const labelMap = {
       '1h': '最近 1 小时',
-      'today': '今日 00:00 至今',
+      '3h': '最近 3 小时',
+      '6h': '最近 6 小时',
+      '12h': '最近 12 小时',
       '24h': '最近 24 小时',
-      '7d': '最近 7 天',
-      'all': '全部历史记录'
+      'today': '今日 00:00 至今',
+      'yesterday': '昨日全天',
+      '3d': '最近 3 天',
+      '7d': '最近 7 天'
     };
     const lbl = document.getElementById('usage-chart-range-label');
     if (lbl) lbl.textContent = labelMap[range] || range;
@@ -1976,6 +2050,10 @@ class WorkBuddyApp {
     return num.toLocaleString();
   }
 
+  // renderUsageChart 双 Y 轴趋势图：Token（左轴，蓝）与 积分（右轴，琥珀）两条线。
+  //
+  // 为什么双轴：Token 量级（百万）与积分量级（几十）差异巨大，同一 Y 轴会把
+  // 积分线压成贴地直线。两条线各有独立刻度才能同时看清"消耗量"与"花费"。
   renderUsageChart(buckets) {
     const container = document.getElementById('usage-chart-container');
     if (!container) return;
@@ -1985,91 +2063,106 @@ class WorkBuddyApp {
       return;
     }
 
-    // 主指标用「消耗积分」而非 total_tokens：
-    // prompt_tokens 含会话上下文重复计数（客户端每轮重发全部历史），
-    // 用它画图会把趋势严重放大且随会话长度漂移；credit 是真实扣费，最能反映成本走势。
-    const useCredit = buckets.some(b => (b.credit || 0) > 0);
-    const metricOf = (b) => useCredit ? (b.credit || 0) : (b.completion_tokens || 0);
-    const maxTokens = Math.max(1, ...buckets.map(metricOf));
     const count = buckets.length;
+    // 左轴 = Token（用输出 tokens：真实产出，不含会话重复重发）
+    // 右轴 = 积分（真实扣费）
+    const tokenOf = (b) => b.completion_tokens || 0;
+    const creditOf = (b) => b.credit || 0;
+    const maxToken = Math.max(1, ...buckets.map(tokenOf));
+    const maxCredit = Math.max(0.0001, ...buckets.map(creditOf));
 
-    // 构建 SVG 折线面积图
     const width = 800;
-    const height = 180;
-    const padTop = 20;
-    const padBottom = 25;
-    const padLeft = 10;
-    const padRight = 10;
+    const height = 200;
+    const padTop = 18;
+    const padBottom = 28;
+    const padLeft = 48;   // 左侧留给 token 轴标签
+    const padRight = 52;  // 右侧留给积分轴标签
     const plotW = width - padLeft - padRight;
     const plotH = height - padTop - padBottom;
+    const xAt = (i) => padLeft + (plotW / (count - 1 || 1)) * i;
+    const yToken = (v) => padTop + plotH - (v / maxToken) * plotH;
+    const yCredit = (v) => padTop + plotH - (v / maxCredit) * plotH;
 
-    const points = buckets.map((b, i) => {
-      const x = padLeft + (plotW / (count - 1 || 1)) * i;
-      const y = padTop + plotH - (metricOf(b) / maxTokens) * plotH;
-      return { x, y, bucket: b };
-    });
+    const tokenPoints = buckets.map((b, i) => ({ x: xAt(i), y: yToken(tokenOf(b)), b }));
+    const creditPoints = buckets.map((b, i) => ({ x: xAt(i), y: yCredit(creditOf(b)), b }));
 
-    let dArea = `M ${points[0].x} ${padTop + plotH} `;
-    let dLine = `M ${points[0].x} ${points[0].y} `;
+    const linePath = (pts) => pts.map((p, i) => `${i === 0 ? 'M' : 'L'} ${p.x.toFixed(1)} ${p.y.toFixed(1)}`).join(' ');
+    const areaPath = (pts) =>
+      `M ${pts[0].x.toFixed(1)} ${(padTop + plotH).toFixed(1)} ` +
+      pts.map(p => `L ${p.x.toFixed(1)} ${p.y.toFixed(1)}`).join(' ') +
+      ` L ${pts[pts.length - 1].x.toFixed(1)} ${(padTop + plotH).toFixed(1)} Z`;
 
-    for (let i = 0; i < points.length; i++) {
-      dLine += `L ${points[i].x} ${points[i].y} `;
-      dArea += `L ${points[i].x} ${points[i].y} `;
-    }
-    dArea += `L ${points[points.length - 1].x} ${padTop + plotH} Z`;
-
-    let xLabelsHtml = '';
-    const step = count > 12 ? Math.ceil(count / 6) : 1;
-    for (let i = 0; i < count; i += step) {
-      const p = points[i];
-      xLabelsHtml += `<text x="${p.x}" y="${height - 4}" text-anchor="middle" font-size="10" fill="currentColor" class="text-slate-400 font-mono">${p.bucket.label}</text>`;
+    // X 轴标签：最多 6 个，避免拥挤
+    let xLabels = '';
+    const labelStep = Math.max(1, Math.ceil(count / 6));
+    for (let i = 0; i < count; i += labelStep) {
+      const p = tokenPoints[i];
+      xLabels += `<text x="${p.x}" y="${height - 6}" text-anchor="middle" font-size="9" fill="currentColor" class="text-slate-400 font-mono">${this.escapeHtml(p.b.label)}</text>`;
     }
 
-    const circlesHtml = points.map(p => {
-      const c = p.bucket.credit || 0;
-      const tip = useCredit
-        ? `${p.bucket.label}: ${c.toFixed(3)} 积分, ${p.bucket.call_count} 次调用`
-        : `${p.bucket.label}: ${(p.bucket.completion_tokens || 0).toLocaleString()} 输出 Tokens, ${p.bucket.call_count} 次调用`;
-      return `<circle cx="${p.x}" cy="${p.y}" r="3.5" class="chart-point fill-white dark:fill-dark-card stroke-indigo-500 hover:r-5 transition-all cursor-pointer" stroke-width="2" data-info="${tip}" />`;
-    }).join('');
+    // 双轴刻度（各 3 档：0 / 中 / 最大）
+    let yAxis = '';
+    for (let k = 0; k <= 2; k++) {
+      const frac = k / 2;
+      const y = padTop + plotH - frac * plotH;
+      const tv = Math.round(maxToken * frac);
+      const cv = maxCredit * frac;
+      yAxis += `
+        <text x="${padLeft - 6}" y="${y + 3}" text-anchor="end" font-size="9" fill="currentColor" class="text-sky-500 font-mono">${this.formatNumberCompact(tv)}</text>
+        <text x="${width - padRight + 6}" y="${y + 3}" text-anchor="start" font-size="9" fill="currentColor" class="text-amber-500 font-mono">${cv < 1 ? cv.toFixed(2) : cv.toFixed(1)}</text>`;
+    }
+
+    const tokenDots = tokenPoints.map(p =>
+      `<circle cx="${p.x}" cy="${p.y}" r="3" fill="#0ea5e9" stroke="#fff" stroke-width="1.5" class="cursor-pointer hover:r-4 transition-all"
+        data-tip="${this.escapeHtml(p.b.label)}｜输出 ${tokenOf(p.b).toLocaleString()} tokens｜积分 ${creditOf(p.b).toFixed(3)}｜${p.b.call_count} 次" />`
+    ).join('');
+    const creditDots = creditPoints.map(p =>
+      `<circle cx="${p.x}" cy="${p.y}" r="3" fill="#f59e0b" stroke="#fff" stroke-width="1.5" class="cursor-pointer hover:r-4 transition-all"
+        data-tip="${this.escapeHtml(p.b.label)}｜输出 ${tokenOf(p.b).toLocaleString()} tokens｜积分 ${creditOf(p.b).toFixed(3)}｜${p.b.call_count} 次" />`
+    ).join('');
 
     container.innerHTML = `
       <svg viewBox="0 0 ${width} ${height}" class="w-full h-full overflow-visible">
         <defs>
           <linearGradient id="tokenAreaGrad" x1="0%" y1="0%" x2="0%" y2="100%">
-            <stop offset="0%" stop-color="#6366f1" stop-opacity="0.35"/>
-            <stop offset="100%" stop-color="#6366f1" stop-opacity="0.0"/>
+            <stop offset="0%" stop-color="#0ea5e9" stop-opacity="0.22"/>
+            <stop offset="100%" stop-color="#0ea5e9" stop-opacity="0"/>
           </linearGradient>
         </defs>
-        <!-- 网格背景线 -->
+
+        <!-- 网格线 -->
         <line x1="${padLeft}" y1="${padTop}" x2="${width - padRight}" y2="${padTop}" stroke="currentColor" class="text-slate-100 dark:text-slate-800/80" stroke-dasharray="4 4" />
         <line x1="${padLeft}" y1="${padTop + plotH / 2}" x2="${width - padRight}" y2="${padTop + plotH / 2}" stroke="currentColor" class="text-slate-100 dark:text-slate-800/80" stroke-dasharray="4 4" />
         <line x1="${padLeft}" y1="${padTop + plotH}" x2="${width - padRight}" y2="${padTop + plotH}" stroke="currentColor" class="text-slate-200 dark:text-slate-800" />
 
-        <!-- 面积与折线 -->
-        <path d="${dArea}" fill="url(#tokenAreaGrad)" />
-        <path d="${dLine}" fill="none" stroke="#6366f1" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round" />
+        ${yAxis}
 
-        <!-- 点与文本标签 -->
-        ${circlesHtml}
-        ${xLabelsHtml}
+        <!-- Token 线（左轴，蓝）+ 面积 -->
+        <path d="${areaPath(tokenPoints)}" fill="url(#tokenAreaGrad)" />
+        <path d="${linePath(tokenPoints)}" fill="none" stroke="#0ea5e9" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round" />
+
+        <!-- 积分线（右轴，琥珀，虚线以便与 token 线区分） -->
+        <path d="${linePath(creditPoints)}" fill="none" stroke="#f59e0b" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round" stroke-dasharray="5 3" />
+
+        ${tokenDots}
+        ${creditDots}
+        ${xLabels}
       </svg>
       <div id="usage-chart-tooltip" class="absolute hidden bg-slate-900 text-white text-[11px] px-2.5 py-1.5 rounded-lg pointer-events-none shadow-xl border border-slate-700 font-mono z-20"></div>
     `;
 
-    // 绑定点悬浮提示
+    // 悬浮提示（两点共用一个 tooltip）
     const tooltip = document.getElementById('usage-chart-tooltip');
-    container.querySelectorAll('.chart-point').forEach(pt => {
-      pt.addEventListener('mouseenter', (e) => {
-        const info = pt.getAttribute('data-info');
-        if (tooltip && info) {
-          tooltip.textContent = info;
-          tooltip.classList.remove('hidden');
-          const rect = pt.getBoundingClientRect();
-          const pRect = container.getBoundingClientRect();
-          tooltip.style.left = `${rect.left - pRect.left - tooltip.offsetWidth / 2 + 3}px`;
-          tooltip.style.top = `${rect.top - pRect.top - 32}px`;
-        }
+    container.querySelectorAll('circle[data-tip]').forEach(pt => {
+      pt.addEventListener('mouseenter', () => {
+        const info = pt.getAttribute('data-tip');
+        if (!tooltip || !info) return;
+        tooltip.textContent = info;
+        tooltip.classList.remove('hidden');
+        const rect = pt.getBoundingClientRect();
+        const pRect = container.getBoundingClientRect();
+        tooltip.style.left = `${rect.left - pRect.left - tooltip.offsetWidth / 2 + 3}px`;
+        tooltip.style.top = `${rect.top - pRect.top - 34}px`;
       });
       pt.addEventListener('mouseleave', () => {
         if (tooltip) tooltip.classList.add('hidden');

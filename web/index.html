@@ -642,14 +642,33 @@ resp = client.chat.completions.create(
               <p class="text-xs text-slate-400 mt-0.5">多维度统计网关请求量、Token 消耗及各账号/模型配额分布</p>
             </div>
 
-            <!-- 时间筛选药丸与刷新控制 -->
-            <div class="flex items-center gap-2">
-              <div class="bg-slate-100 dark:bg-slate-900 p-1 rounded-xl flex items-center gap-1 border border-slate-200 dark:border-slate-800 text-xs">
-                <button onclick="app.setUsageRange('1h')" class="usage-range-btn px-3 py-1 rounded-lg text-slate-500 dark:text-slate-400 hover:text-slate-900 dark:hover:text-white transition-all font-medium" data-range="1h">1小时</button>
-                <button onclick="app.setUsageRange('today')" class="usage-range-btn px-3 py-1 rounded-lg text-slate-500 dark:text-slate-400 hover:text-slate-900 dark:hover:text-white transition-all font-medium" data-range="today">今日</button>
-                <button onclick="app.setUsageRange('24h')" class="usage-range-btn active px-3 py-1 rounded-lg bg-white dark:bg-dark-card shadow-sm text-indigo-600 dark:text-indigo-400 font-semibold transition-all" data-range="24h">24小时</button>
-                <button onclick="app.setUsageRange('7d')" class="usage-range-btn px-3 py-1 rounded-lg text-slate-500 dark:text-slate-400 hover:text-slate-900 dark:hover:text-white transition-all font-medium" data-range="7d">7天</button>
-                <button onclick="app.setUsageRange('all')" class="usage-range-btn px-3 py-1 rounded-lg text-slate-500 dark:text-slate-400 hover:text-slate-900 dark:hover:text-white transition-all font-medium" data-range="all">全部</button>
+            <!-- 时间范围 + 自动刷新（对齐参考项目 codebuddy2api 的交互模型） -->
+            <div class="flex flex-wrap items-center gap-2">
+              <div class="bg-slate-100 dark:bg-slate-900 p-1 rounded-xl flex flex-wrap items-center gap-1 border border-slate-200 dark:border-slate-800 text-xs">
+                <button onclick="app.setUsageRange('1h')" class="usage-range-btn px-2.5 py-1 rounded-lg text-slate-500 dark:text-slate-400 hover:text-slate-900 dark:hover:text-white transition-all font-medium" data-range="1h">1小时</button>
+                <button onclick="app.setUsageRange('3h')" class="usage-range-btn px-2.5 py-1 rounded-lg text-slate-500 dark:text-slate-400 hover:text-slate-900 dark:hover:text-white transition-all font-medium" data-range="3h">3小时</button>
+                <button onclick="app.setUsageRange('6h')" class="usage-range-btn px-2.5 py-1 rounded-lg text-slate-500 dark:text-slate-400 hover:text-slate-900 dark:hover:text-white transition-all font-medium" data-range="6h">6小时</button>
+                <button onclick="app.setUsageRange('12h')" class="usage-range-btn px-2.5 py-1 rounded-lg text-slate-500 dark:text-slate-400 hover:text-slate-900 dark:hover:text-white transition-all font-medium" data-range="12h">12小时</button>
+                <button onclick="app.setUsageRange('24h')" class="usage-range-btn active px-2.5 py-1 rounded-lg bg-white dark:bg-dark-card shadow-sm text-indigo-600 dark:text-indigo-400 font-semibold transition-all" data-range="24h">24小时</button>
+                <button onclick="app.setUsageRange('today')" class="usage-range-btn px-2.5 py-1 rounded-lg text-slate-500 dark:text-slate-400 hover:text-slate-900 dark:hover:text-white transition-all font-medium" data-range="today">今日</button>
+                <button onclick="app.setUsageRange('yesterday')" class="usage-range-btn px-2.5 py-1 rounded-lg text-slate-500 dark:text-slate-400 hover:text-slate-900 dark:hover:text-white transition-all font-medium" data-range="yesterday">昨日</button>
+                <button onclick="app.setUsageRange('3d')" class="usage-range-btn px-2.5 py-1 rounded-lg text-slate-500 dark:text-slate-400 hover:text-slate-900 dark:hover:text-white transition-all font-medium" data-range="3d">3天</button>
+                <button onclick="app.setUsageRange('7d')" class="usage-range-btn px-2.5 py-1 rounded-lg text-slate-500 dark:text-slate-400 hover:text-slate-900 dark:hover:text-white transition-all font-medium" data-range="7d">7天</button>
+              </div>
+
+              <!-- 自动刷新：关闭/5s/15s/30s/60s/300s（默认 15 秒） -->
+              <div class="flex items-center gap-1.5">
+                <i data-lucide="refresh-cw" class="w-3.5 h-3.5 text-slate-400"></i>
+                <select id="usage-autorefresh" onchange="app.setAutoRefresh(this.value)"
+                        class="px-2 py-1.5 text-xs rounded-xl bg-slate-100 dark:bg-slate-900 border border-slate-200 dark:border-slate-800 text-slate-600 dark:text-slate-300 focus:outline-none focus:border-indigo-500">
+                  <option value="0">不自动刷新</option>
+                  <option value="5">每 5 秒</option>
+                  <option value="15" selected>每 15 秒</option>
+                  <option value="30">每 30 秒</option>
+                  <option value="60">每 1 分钟</option>
+                  <option value="300">每 5 分钟</option>
+                </select>
+                <span id="usage-countdown" class="text-[10px] text-slate-400 font-mono w-8"></span>
               </div>
 
               <button onclick="app.clearUsageHistory()" class="px-3 py-1.5 rounded-xl border border-rose-500/20 text-rose-500 hover:bg-rose-500/10 text-xs font-medium transition-colors flex items-center gap-1.5" title="清空历史用量数据">
@@ -743,19 +762,30 @@ resp = client.chat.completions.create(
 
           <!-- 趋势图表区 (SVG 交互图表) -->
           <div class="p-6 rounded-2xl bg-white dark:bg-dark-card border border-slate-200 dark:border-dark-border space-y-4">
-            <div class="flex items-center justify-between">
+            <div class="flex flex-wrap items-center justify-between gap-2">
               <h4 class="text-sm font-bold flex items-center gap-2">
                 <i data-lucide="trending-up" class="w-4 h-4 text-indigo-500"></i>
-                Token 消耗与调用趋势
+                消耗趋势
               </h4>
-              <span id="usage-chart-range-label" class="text-xs text-slate-400">最近 24 小时</span>
+              <div class="flex items-center gap-3">
+                <!-- 图例：说明两条线各自的轴 -->
+                <span class="flex items-center gap-1.5 text-[11px] text-slate-500 dark:text-slate-400">
+                  <span class="inline-block w-4 h-0.5 rounded-full" style="background:#0ea5e9"></span>
+                  输出 Tokens <span class="text-slate-400">（左轴）</span>
+                </span>
+                <span class="flex items-center gap-1.5 text-[11px] text-slate-500 dark:text-slate-400">
+                  <span class="inline-block w-4 h-0.5 rounded-full" style="background:#f59e0b;background-image:repeating-linear-gradient(90deg,#f59e0b 0 5px,transparent 5px 8px)"></span>
+                  消耗积分 <span class="text-slate-400">（右轴）</span>
+                </span>
+                <span id="usage-chart-range-label" class="text-xs text-slate-400">最近 24 小时</span>
+              </div>
             </div>
 
             <!-- 数据更新时间（后端 last_updated） -->
             <div id="usage-last-updated" class="text-[11px] text-slate-400"></div>
 
-            <!-- 图表容器 -->
-            <div id="usage-chart-container" class="w-full h-48 relative flex items-end">
+            <!-- 图表容器：双 Y 轴，稍高一些便于看清两条线 -->
+            <div id="usage-chart-container" class="w-full h-56 relative flex items-end">
               <!-- SVG 曲线 / 柱形图在此由 JS 动态生成 -->
             </div>
           </div>

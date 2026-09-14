@@ -127,37 +127,93 @@ type TimeBucket struct {
 	Credit           float64 `json:"credit"` // 该桶真实消耗积分（成本视角的主指标）
 }
 
+// usageWindows 时间窗定义（对齐参考项目 codebuddy2api 的分桶模型）。
+//
+// 设计要点：**固定桶数、按桶宽对齐**，而不是"回溯 N 小时再随便切"。
+// 这样同一 range 下桶的边界是稳定的（例如 24h 总是整点对齐），
+// 自动刷新时曲线不会左右抖动。
+type usageWindow struct {
+	bucketCount  int
+	bucketSizeMs int64
+	// dayAligned 为 true 时按自然日对齐（today/yesterday），
+	// 否则按 bucketSizeMs 的整数倍滚动对齐。
+	dayAligned bool
+	// dayOffset 自然日对齐时的偏移天数（yesterday = -1）。
+	dayOffset int
+	// fixedDays 按整天分桶时的天数（3d/7d）
+	fixedDays int
+}
+
+// rollingWindows 滚动窗口（按 bucketSize 整数倍对齐）。
+var rollingWindows = map[string]usageWindow{
+	"1h":  {bucketCount: 12, bucketSizeMs: 5 * 60 * 1000},
+	"3h":  {bucketCount: 12, bucketSizeMs: 15 * 60 * 1000},
+	"6h":  {bucketCount: 12, bucketSizeMs: 30 * 60 * 1000},
+	"12h": {bucketCount: 12, bucketSizeMs: 60 * 60 * 1000},
+	"24h": {bucketCount: 24, bucketSizeMs: 60 * 60 * 1000},
+}
+
+// resolveUsageWindow 求某 range 的窗口边界（对齐参考项目实现）。
+// 返回 (startMs, endMs, bucketCount, bucketSizeMs)。
+func resolveUsageWindow(rangeType string, now time.Time) (int64, int64, int, int64) {
+	nowMs := now.UnixMilli()
+
+	switch rangeType {
+	case "today", "yesterday":
+		// 按自然日 0 点对齐，固定 24 桶（每小时一格）
+		start := time.Date(now.Year(), now.Month(), now.Day(), 0, 0, 0, 0, now.Location())
+		if rangeType == "yesterday" {
+			start = start.AddDate(0, 0, -1)
+		}
+		end := start.AddDate(0, 0, 1)
+		return start.UnixMilli(), end.UnixMilli(), 24, 60 * 60 * 1000
+
+	case "3d", "7d":
+		// 按自然日对齐，固定 N 桶（每天一格），末桶是"今天"
+		days := 3
+		if rangeType == "7d" {
+			days = 7
+		}
+		today := time.Date(now.Year(), now.Month(), now.Day(), 0, 0, 0, 0, now.Location())
+		end := today.AddDate(0, 0, 1)
+		start := end.AddDate(0, 0, -days)
+		return start.UnixMilli(), end.UnixMilli(), days, 24 * 60 * 60 * 1000
+	}
+
+	w, ok := rollingWindows[rangeType]
+	if !ok {
+		// 未知 range 回落到 24h，避免前端传错就白屏
+		w = rollingWindows["24h"]
+	}
+	// 当前桶起点：向下取整到 bucketSize 的整数倍
+	currentStart := (nowMs / w.bucketSizeMs) * w.bucketSizeMs
+	end := currentStart + w.bucketSizeMs
+	start := currentStart - int64(w.bucketCount-1)*w.bucketSizeMs
+	return start, end, w.bucketCount, w.bucketSizeMs
+}
+
 // GetAnalytics 获取指定范围的聚合分析数据。
 func (t *UsageTracker) GetAnalytics(rangeType string) map[string]any {
 	t.mu.RLock()
 	defer t.mu.RUnlock()
 
 	now := time.Now()
-	var startTime time.Time
 
+	// 规范 range 并求窗口（对齐参考项目：固定桶数 + 桶宽对齐）
 	switch rangeType {
-	case "1h":
-		startTime = now.Add(-1 * time.Hour)
-	case "today":
-		y, m, d := now.Date()
-		startTime = time.Date(y, m, d, 0, 0, 0, 0, now.Location())
-	case "7d":
-		startTime = now.Add(-7 * 24 * time.Hour)
-	case "all":
-		startTime = time.Time{}
-	case "24h":
-		fallthrough
+	case "1h", "3h", "6h", "12h", "24h", "3d", "7d", "today", "yesterday":
+		// 合法
 	default:
 		rangeType = "24h"
-		startTime = now.Add(-24 * time.Hour)
 	}
+	winStartMs, winEndMs, bucketCount, bucketSizeMs := resolveUsageWindow(rangeType, now)
+	startUnix := winStartMs / 1000
+	endUnix := winEndMs / 1000
 
-	startUnix := startTime.Unix()
-
-	// 1. 过滤符合时间范围的记录
+	// 1. 过滤符合时间范围的记录（窗口为 [start, end) 半开区间）
 	var filtered []UsageRecord
 	for _, r := range t.records {
-		if r.Timestamp >= startUnix {
+		if r.Timestamp >= startUnix && r.Timestamp < endUnix {
 			filtered = append(filtered, r)
 		}
 	}
@@ -259,30 +315,25 @@ func (t *UsageTracker) GetAnalytics(rangeType string) map[string]any {
 	//
 	// 桶按**时间戳区间**归并（不是按格式化后的字符串比较），
 	// 这样跨天/跨月/夏令时都不会出现"标签相同但时间不同"的错配。
-	step, bucketCount := pickBucketStep(rangeType, now, filtered)
-	if bucketCount <= 0 {
-		bucketCount = 1
-	}
-	// 对齐到 step 的整数倍，保证桶边界稳定
-	nowTrunc := time.Unix((now.Unix()/int64(step.Seconds()))*int64(step.Seconds()), 0)
-	buckets := make([]*TimeBucket, 0, bucketCount)
-	start := nowTrunc.Add(-time.Duration(bucketCount-1) * step)
+	// 5. 生成时间序列趋势桶
+	//
+	// 桶边界由 resolveUsageWindow 给出（固定桶数 + 桶宽对齐，对齐参考项目），
+	// 归桶用「时间戳区间求下标」而非字符串比较——后者跨天/跨月会标签碰撞。
+	bucketSec := bucketSizeMs / 1000
+	origin := winStartMs / 1000
+	buckets := make([]*TimeBucket, bucketCount)
 	for i := 0; i < bucketCount; i++ {
-		t := start.Add(time.Duration(i) * step)
-		buckets = append(buckets, &TimeBucket{
-			Label:     bucketLabel(t, step),
-			Timestamp: t.Unix(),
-		})
+		startSec := origin + int64(i)*bucketSec
+		buckets[i] = &TimeBucket{
+			Label:     bucketLabel(time.Unix(startSec, 0), bucketSizeMs),
+			Timestamp: startSec,
+		}
 	}
-
-	// 归桶：以第一个桶的起始时间为原点，按 step 求下标（O(1)，无需遍历桶）
-	origin := start.Unix()
-	stepSec := int64(step.Seconds())
 	for _, r := range filtered {
 		if r.Timestamp < origin {
-			continue // 落在窗口之前（all 的自适应窗口可能窄于全量数据）
+			continue
 		}
-		idx := int((r.Timestamp - origin) / stepSec)
+		idx := int((r.Timestamp - origin) / bucketSec)
 		if idx < 0 || idx >= len(buckets) {
 			continue
 		}
@@ -312,93 +363,25 @@ func (t *UsageTracker) GetAnalytics(rangeType string) map[string]any {
 		"model_breakdown":   modelList,
 		"account_breakdown": accountList,
 		"time_series":       buckets,
-		"bucket_seconds":    int64(step.Seconds()),
+		"bucket_seconds":    bucketSec,
+		"window_start":      origin,
+		"window_end":        winEndMs / 1000,
 		"last_updated":      now.Format(time.RFC3339),
 	}
 }
 
-// pickBucketStep 依 range 与数据实际跨度选择分桶粒度。
-// 返回 (每桶时长, 桶数)。
-func pickBucketStep(rangeType string, now time.Time, filtered []UsageRecord) (time.Duration, int) {
-	const (
-		fiveMin = 5 * time.Minute
-		hour    = time.Hour
-		day     = 24 * time.Hour
-		week    = 7 * 24 * time.Hour
-	)
-	switch rangeType {
-	case "1h":
-		return fiveMin, 12
-	case "today":
-		// 当日 0 点到现在，按小时分桶（至少 1 桶）
-		y, m, d := now.Date()
-		midnight := time.Date(y, m, d, 0, 0, 0, 0, now.Location())
-		n := int(now.Sub(midnight).Hours()) + 1
-		if n > 24 {
-			n = 24
-		}
-		return hour, n
-	case "7d":
-		return day, 7
-	case "24h":
-		return hour, 24
-	case "all":
-		// 按真实跨度自适应：跨度小就细化，跨度大就粗化，保证桶数在 24~60 之间。
-		if len(filtered) == 0 {
-			return hour, 24
-		}
-		oldest := filtered[0].Timestamp
-		for _, r := range filtered {
-			if r.Timestamp < oldest {
-				oldest = r.Timestamp
-			}
-		}
-		span := now.Sub(time.Unix(oldest, 0))
-		switch {
-		case span <= 2*time.Hour:
-			n := int(span.Minutes()/5) + 1
-			if n < 1 {
-				n = 1
-			}
-			if n > 60 {
-				n = 60
-			}
-			return fiveMin, n
-		case span <= 2*day:
-			n := int(span.Hours()) + 1
-			if n > 60 {
-				n = 60
-			}
-			return hour, n
-		case span <= 60*day:
-			n := int(span.Hours()/24) + 1
-			if n > 60 {
-				n = 60
-			}
-			return day, n
-		default:
-			n := int(span.Hours()/(24*7)) + 1
-			if n > 60 {
-				n = 60
-			}
-			return week, n
-		}
-	}
-	return hour, 24
-}
-
-// bucketLabel 按粒度生成人类可读标签。
-func bucketLabel(t time.Time, step time.Duration) string {
-	switch {
-	case step < time.Hour:
-		return t.Format("15:04")
-	case step < 24*time.Hour:
-		return t.Format("01-02 15:00")
-	case step < 7*24*time.Hour:
-		return t.Format("01-02")
-	default:
+// bucketLabel 按桶宽生成人类可读标签（对齐参考项目的格式约定）：
+//   - 天级桶：MM-DD
+//   - 小时及更细：HH:MM
+//
+// 额外的跨天可读性处理：当 24h 窗口跨过午夜时，仅显示 HH:MM 会让人
+// 分不清是哪一天，故小时级桶一律带日期前缀（MM-DD HH:MM）。
+func bucketLabel(t time.Time, bucketSizeMs int64) string {
+	const dayMs = 24 * 60 * 60 * 1000
+	if bucketSizeMs >= dayMs {
 		return t.Format("01-02")
 	}
+	return t.Format("01-02 15:04")
 }
 
 // avgDurationMs 计算平均耗时（毫秒）；无数据返回 0。
@@ -481,27 +464,20 @@ func (t *UsageTracker) Records(rangeType, modelFilter string, offset, limit int)
 	defer t.mu.RUnlock()
 
 	now := time.Now()
-	var startUnix int64
+	// 与聚合视图共用同一套窗口定义，保证"图表"与"明细"看到的是同一个时间范围
 	switch rangeType {
-	case "1h":
-		startUnix = now.Add(-1 * time.Hour).Unix()
-	case "today":
-		y, m, d := now.Date()
-		startUnix = time.Date(y, m, d, 0, 0, 0, 0, now.Location()).Unix()
-	case "7d":
-		startUnix = now.Add(-7 * 24 * time.Hour).Unix()
-	case "all":
-		startUnix = 0
-	case "24h":
-		fallthrough
+	case "1h", "3h", "6h", "12h", "24h", "3d", "7d", "today", "yesterday":
 	default:
-		startUnix = now.Add(-24 * time.Hour).Unix()
+		rangeType = "24h"
 	}
+	winStartMs, winEndMs, _, _ := resolveUsageWindow(rangeType, now)
+	startUnix := winStartMs / 1000
+	endUnix := winEndMs / 1000
 
 	// 先过滤（含模型子串）
 	matched := make([]UsageRecord, 0, len(t.records))
 	for _, r := range t.records {
-		if r.Timestamp < startUnix {
+		if r.Timestamp < startUnix || r.Timestamp >= endUnix {
 			continue
 		}
 		if modelFilter != "" && !strings.Contains(r.Model, modelFilter) {
