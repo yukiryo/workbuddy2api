@@ -1158,11 +1158,11 @@ class WorkBuddyApp {
     const sections = [];
     if (groups.cn.length) {
       sections.push(this.renderModelGroup('CN', 'cn', groups.cn,
-        '国内域（codebuddy.cn）。模型名建议直接用裸名，如 <code class="font-mono">auto</code>'));
+        '国内域（codebuddy.cn）。<code class="font-mono">cn:</code> 前缀可省略，裸名即为 CN'));
     }
     if (groups.global.length) {
       sections.push(this.renderModelGroup('GLOBAL', 'global', groups.global,
-        '国际域（workbuddy.ai）。<strong>必须带 <code class="font-mono">global:</code> 前缀</strong>，否则会路由到 CN 池'));
+        '国际域（workbuddy.ai）。<strong>必须带 <code class="font-mono">global:</code> 前缀</strong>，去掉会路由到 CN 池'));
     }
 
     container.className = 'space-y-6';
@@ -1218,6 +1218,13 @@ class WorkBuddyApp {
               <span>复制</span>
             </button>
           </div>
+
+          <!-- 前缀说明：让用户不必猜 cn: 前缀的含义与等价写法 -->
+          <p class="text-[10px] text-slate-400 leading-relaxed">
+            ${isGlobal
+              ? `前缀 <code class="font-mono text-violet-500">global:</code> <strong>必须保留</strong>——去掉会路由到 CN 池。出站时前缀会被剥离。`
+              : `<code class="font-mono text-sky-500">cn:</code> 前缀可省略，等价写法：<code class="font-mono">${this.escapeHtml(bare)}</code>（出站时会自动剥离前缀）`}
+          </p>
 
           <!-- 规格 -->
           <div class="grid grid-cols-2 gap-2 text-[10px] text-slate-400">
