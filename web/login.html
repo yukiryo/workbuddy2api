@@ -1,0 +1,181 @@
+<!DOCTYPE html>
+<html lang="zh-CN" class="dark">
+<head>
+  <script>
+    (function() {
+      var saved = localStorage.getItem('wb_theme');
+      if (saved === 'light') {
+        document.documentElement.classList.remove('dark');
+      } else {
+        document.documentElement.classList.add('dark');
+      }
+    })();
+  </script>
+
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>登录 - WorkBuddy 控制台</title>
+  <link rel="icon" href="data:image/svg+xml,<svg xmlns=%22http://www.w3.org/2000/svg%22 viewBox=%220 0 100 100%22><text y=%22.9em%22 font-size=%2290%22>⚡</text></svg>">
+
+  <script src="/assets/tailwindcss.js"></script>
+  <script>
+    tailwind.config = {
+      darkMode: 'class',
+      theme: {
+        extend: {
+          colors: {
+            dark: { bg: '#0b0f19', card: '#111827', border: '#1f2937', hover: '#1a2234' }
+          }
+        }
+      }
+    }
+  </script>
+  <script src="/assets/lucide.min.js"></script>
+  <link rel="stylesheet" href="style.css">
+</head>
+<body class="bg-slate-50 text-slate-800 dark:bg-dark-bg dark:text-slate-100 min-h-screen flex items-center justify-center font-sans transition-colors duration-200">
+
+  <div class="w-full max-w-sm px-6">
+    <!-- 品牌区 -->
+    <div class="flex flex-col items-center mb-8">
+      <div class="w-14 h-14 rounded-2xl bg-gradient-to-tr from-indigo-600 to-violet-500 flex items-center justify-center shadow-lg shadow-indigo-500/20">
+        <i data-lucide="zap" class="w-7 h-7 text-white"></i>
+      </div>
+      <h1 class="mt-4 text-xl font-bold">WorkBuddy 控制台</h1>
+      <p class="mt-1 text-xs text-slate-400">请输入密码以继续访问</p>
+    </div>
+
+    <!-- 登录卡片 -->
+    <form id="login-form" class="p-6 rounded-2xl bg-white dark:bg-dark-card border border-slate-200 dark:border-dark-border shadow-sm space-y-4">
+      <div>
+        <label for="password" class="block text-xs font-medium text-slate-500 dark:text-slate-400 mb-2">访问密码</label>
+        <div class="relative">
+          <input
+            id="password"
+            type="password"
+            autocomplete="current-password"
+            required
+            autofocus
+            placeholder="请输入密码"
+            class="w-full px-3 py-2.5 pr-10 text-sm rounded-xl bg-slate-50 dark:bg-slate-900/60 border border-slate-200 dark:border-slate-800 focus:outline-none focus:ring-2 focus:ring-indigo-500/40 focus:border-indigo-500 transition-colors"
+          >
+          <button
+            type="button"
+            id="toggle-password"
+            tabindex="-1"
+            class="absolute right-2 top-1/2 -translate-y-1/2 p-1.5 rounded-lg text-slate-400 hover:text-slate-600 dark:hover:text-slate-200 transition-colors"
+            title="显示 / 隐藏密码"
+          >
+            <i data-lucide="eye" class="w-4 h-4"></i>
+          </button>
+        </div>
+      </div>
+
+      <!-- 错误提示 -->
+      <div id="login-error" class="hidden flex items-start gap-2 p-3 rounded-xl bg-red-500/10 border border-red-500/20 text-red-600 dark:text-red-400 text-xs">
+        <i data-lucide="alert-circle" class="w-4 h-4 flex-shrink-0 mt-px"></i>
+        <span id="login-error-text">密码不正确</span>
+      </div>
+
+      <button
+        type="submit"
+        id="login-submit"
+        class="w-full flex items-center justify-center gap-2 px-4 py-2.5 text-sm font-medium rounded-xl bg-indigo-600 hover:bg-indigo-700 text-white transition-colors disabled:opacity-60 disabled:cursor-not-allowed"
+      >
+        <i data-lucide="log-in" class="w-4 h-4"></i>
+        <span id="login-submit-text">登录</span>
+      </button>
+    </form>
+
+    <p class="mt-6 text-center text-[11px] text-slate-400">
+      登录状态保持 7 天，可在控制台右上角退出
+    </p>
+  </div>
+
+  <script>
+    (function() {
+      if (window.lucide) lucide.createIcons();
+
+      var form = document.getElementById('login-form');
+      var pwd = document.getElementById('password');
+      var errorBox = document.getElementById('login-error');
+      var errorText = document.getElementById('login-error-text');
+      var submitBtn = document.getElementById('login-submit');
+      var submitText = document.getElementById('login-submit-text');
+      var toggleBtn = document.getElementById('toggle-password');
+
+      // 显示 / 隐藏密码
+      toggleBtn.addEventListener('click', function() {
+        var showing = pwd.type === 'text';
+        pwd.type = showing ? 'password' : 'text';
+        toggleBtn.innerHTML = '<i data-lucide="' + (showing ? 'eye' : 'eye-off') + '" class="w-4 h-4"></i>';
+        if (window.lucide) lucide.createIcons();
+        pwd.focus();
+      });
+
+      function showError(msg) {
+        errorText.textContent = msg;
+        errorBox.classList.remove('hidden');
+        errorBox.classList.add('flex');
+      }
+
+      function hideError() {
+        errorBox.classList.add('hidden');
+        errorBox.classList.remove('flex');
+      }
+
+      form.addEventListener('submit', async function(e) {
+        e.preventDefault();
+        hideError();
+
+        var value = pwd.value;
+        if (!value) {
+          showError('请输入密码');
+          return;
+        }
+
+        submitBtn.disabled = true;
+        submitText.textContent = '登录中…';
+
+        try {
+          var res = await fetch('/api/login', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ password: value })
+          });
+          var data = {};
+          try { data = await res.json(); } catch (_) {}
+
+          if (res.ok && data.success) {
+            // 登录成功：跳转到控制台首页
+            window.location.replace('/');
+            return;
+          }
+
+          if (res.status === 429) {
+            showError(data.message || '失败次数过多，请稍后再试');
+          } else {
+            showError(data.message || '密码不正确');
+          }
+          pwd.select();
+        } catch (err) {
+          showError('无法连接到网关，请检查网络');
+        } finally {
+          submitBtn.disabled = false;
+          submitText.textContent = '登录';
+        }
+      });
+
+      // 已登录则直接进入控制台，避免重复登录
+      fetch('/api/session', { cache: 'no-store' })
+        .then(function(r) { return r.ok ? r.json() : null; })
+        .then(function(d) {
+          if (d && d.logged_in) {
+            window.location.replace('/');
+          }
+        })
+        .catch(function() {});
+    })();
+  </script>
+</body>
+</html>
