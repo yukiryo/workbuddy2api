@@ -31,6 +31,7 @@ PLAN.md
 SPEC.md
 docs/
 
-# 设计/计划文档（但 README.md 必须进版本库）
+# 设计/计划文档（但 README 必须进版本库，含英文版）
 *.md
 !README.md
+!README.en.md

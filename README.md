@@ -10,6 +10,10 @@
 </p>
 
 <p align="center">
+  <b>中文</b> · <a href="README.en.md">English</a>
+</p>
+
+<p align="center">
   <img alt="Go" src="https://img.shields.io/badge/Go-1.22.5-00ADD8?logo=go&logoColor=white&style=flat-square">
   <img alt="API" src="https://img.shields.io/badge/API-OpenAI_Compatible-412991?style=flat-square">
   <img alt="Deploy" src="https://img.shields.io/badge/Deploy-Docker_Compose-2496ED?logo=docker&logoColor=white&style=flat-square">
@@ -36,7 +40,7 @@ WorkBuddy2API 是一个自托管的 **OpenAI 兼容反向代理网关**，将腾
 | 🔑 **OAuth 一键登录** | `login.sh` 设备授权流程，自动落盘凭证并重启容器加载新账号 |
 | 🔄 **多账号池** | 三因子加权随机选号（积分占比 ×10 + 闲置补偿 + 成功率 ×3），Top-5 候选 + 防惊群 |
 | 🛡️ **熔断与冷却** | 429 软冷却 600s 起指数退避（封顶 `soft_rate_max`）、404 固定 60s 短冷却、402 硬冷却至次日 04:00、连续失败熔断、在途租约限流 |
-| 🧲 **会话粘性** | 同一会话（`conversation_id`）尽量绑定同一账号，TTL 滚动续期，失败自动解绑，可镜像 Redis 防重启丢失；**按模型判定可用性**——该模型被 6004 限额时立即重分配 |
+| 🧲 **会话粘性** | 同一会话（`conversation_id`）尽量绑定同一账号，TTL 滚动续期，失败自动解绑；**按模型判定可用性**——该模型被 6004 限额时立即重分配 |
 | 💰 **成本优先选号** | 按每次响应的实测扣费（`usage.credit`）记账 `(账号, 模型)`，选号时免费 / 便宜的号优先——同一模型自动优先走仍在限免期的号 |
 | ⏰ **定时任务** | 签到（09/21 点）+ 活跃上报（10 点，点亮连登 / 解锁领养 + streak 自检）+ 猫猫旅行（09/21 点，独立排程）+ token 保活（22 点），四类独立开关 |
 | ⚡ **流式 + 非流式** | 出站强制 `stream:true`；SSE 帧按规范白名单重建；非流式由本地聚合为单响应 |
@@ -44,7 +48,18 @@ WorkBuddy2API 是一个自托管的 **OpenAI 兼容反向代理网关**，将腾
 | 💬 **系统提示词体系** | 网关自有提示词替换客户端 system（默认 `custom`），从源头消灭 system 来源的内容误报；`passthrough` 遇拦截自动降级重试 |
 | 🗑️ **指纹脱敏** | 出站请求体黑名单指纹字段清洗（可关闭），与提示词体系两层叠加 |
 | 📊 **可观测** | 每请求一行表格日志（TTFB / token 速率 / uid）；`/healthz` 带 `service` 身份标识可接负载均衡 / 宿主探活 |
-| 💾 **状态持久化** | 池状态本地原子落盘 + Upstash Redis 异步镜像（可选），重启择新恢复 |
+| 💾 **状态持久化** | 池状态本地原子落盘（`data/state.json`，5s 一次 + 退出前强制 flush），重启恢复积分 / 冷却 / 熔断状态；**零外部依赖**（见下） |
+
+> 下表为 Web 控制台相关能力，详见[Web 控制台](#web-控制台)。
+
+| 能力 | 说明 |
+|---|---|
+| 🖥️ **内置 Web 控制台** | 与 API **同端口同源**托管（`/`），无跨域；暗黑 / 明亮双主题；含概览、账号、模型、用量、沙盒、接入指南、设置等面板 |
+| 🔐 **控制台登录鉴权** | `console_password` 启用后，**页面与 `/api/*` 管理接口**全部要求登录；会话 Cookie（HttpOnly，7 天，仅内存）；防暴力破解（单 IP 连错 5 次锁 5 分钟） |
+| 🧭 **账号状态监测** | 真实请求上游拉取**配额余量 / 签到状态 / 连登天数 / 可用模型**，带 30s 缓存；各项独立降级（某项失败不影响其它项）；支持一键签到 |
+| 🗂️ **凭证在线管理** | 控制台内列出 / 删除 / 重新扫描 `auths/` 凭证；支持手动粘贴 Token 添加；改动**热生效无需重启**；不对外的凭证接口永不返回 token 原文 |
+| 🔗 **网页 OAuth 添加账号** | 点按钮生成 CodeBuddy 登录链接 → 浏览器完成登录 → 自动落盘凭证并热加载，**全程无需 SSH** |
+| 📈 **Token 用量统计** | 按 1h / today / 24h / 7d / all 聚合，含总量看板、SVG 面积图、模型排行、账号分布 |
 
 ## 架构总览
 
@@ -55,14 +70,16 @@ flowchart LR
     subgraph GWI["WorkBuddy2API 网关 :7863"]
         H["HTTP Handler\n鉴权 · 请求体上限 · 提示词改写 · 轮转"] --> P
         H --> S
+        H -.控制台.-> W["Web 控制台\n账号监测 · 凭证管理 · OAuth 登录"]
         P["账号池\n三因子加权 · 熔断 · 冷却 · 租约"] --> U
-        S["会话粘性路由"] -.绑定镜像.-> REDIS
+        S["会话粘性路由"]
         T["定时调度\n签到 09/21 · 旅行 09/21 · 活跃 10 · 保活 22"] --> P
         U["上游 Client\nChatHTTP 流式 · 短 RPC"]
     end
 
     P -. "读凭证 (0600)" .-> AUTH[("auths/*.json")]
-    P -. "状态镜像" .-> REDIS[("Upstash Redis\n可选")]
+    P -. "状态落盘" .-> STATE[("data/state.json")]
+    W -. "读写凭证 / 热加载" .-> AUTH
     U -->|"chat/completions (SSE)"| CB["CodeBuddy\ncopilot.tencent.com"]
     U -->|"billing / auth / growth"| CB
 ```
@@ -171,7 +188,7 @@ curl -s http://localhost:7863/v1/chat/completions \
 | `features.sanitize_blacklist_fingerprints` | `true` | 出站请求体黑名单指纹脱敏 |
 | `prompt.mode` | `custom` | 系统提示词模式：`custom` = 网关用自有提示词替换客户端 system；`passthrough` = 透传客户端原始 system（降级重试仍切中性提示词） |
 | `prompt.file` | 空 | 提示词文件路径；空 = 内置默认（约 2KB）；路径非空但不可读 → 启动报错 |
-| `upstash.url` / `upstash.token` | 空 | 空 = 纯内存模式（Noop 降级，功能照常） |
+| `console_password` | 空 | Web 控制台登录密码；空 = 不启用登录（行为与旧版一致）。也可用 `WB2A_CONSOLE_PASSWORD` 覆盖 |
 | `pool.max_in_flight` | `3` | 单账号最大在途请求数（`0` = 不限） |
 | `pool.breaker_threshold` | `3` | 连续失败触发熔断阈值 |
 | `pool.breaker_cooldown` | `30m` | 熔断基础退避时长 |
@@ -196,7 +213,7 @@ curl -s http://localhost:7863/v1/chat/completions \
 
 加载顺序：JSON 文件 → `WB2A_*` 环境变量（变量非空才覆盖）：
 
-`WB2A_LISTEN` · `WB2A_API_KEY` · `WB2A_AUTH_DIR` · `WB2A_STATE_FILE` · `WB2A_MAX_BODY_MB` · `WB2A_SOFT_RATE`(duration) · `WB2A_SOFT_RATE_MAX`(duration) · `WB2A_TIMEOUT_SECONDS` · `WB2A_HEADER_TIMEOUT_SECONDS` · `WB2A_IDLE_TIMEOUT_SECONDS` · `WB2A_USER_AGENT` · `WB2A_SANITIZE_FINGERPRINTS`(bool) · `WB2A_PROMPT_MODE` · `WB2A_PROMPT_FILE`
+`WB2A_LISTEN` · `WB2A_API_KEY` · `WB2A_CONSOLE_PASSWORD` · `WB2A_AUTH_DIR` · `WB2A_STATE_FILE` · `WB2A_MAX_BODY_MB` · `WB2A_SOFT_RATE`(duration) · `WB2A_SOFT_RATE_MAX`(duration) · `WB2A_TIMEOUT_SECONDS` · `WB2A_HEADER_TIMEOUT_SECONDS` · `WB2A_IDLE_TIMEOUT_SECONDS` · `WB2A_USER_AGENT` · `WB2A_SANITIZE_FINGERPRINTS`(bool) · `WB2A_PROMPT_MODE` · `WB2A_PROMPT_FILE`
 
 ## 核心行为语义
 
@@ -269,7 +286,7 @@ curl -s http://localhost:7863/v1/chat/completions \
 同一会话尽量复用同一账号，多轮对话不跳号：
 
 - 会话键提取顺序：`metadata.conversation_id` → `metadata.conversationId` → `metadata.user_id` → 顶层 `conversation_id` → 顶层 `conversationId`（snake_case 优先于 camelCase）
-- TTL 滚动续期（默认 30m），GC 周期 5m；绑定可镜像到 Redis（7 天 TTL）防重启丢失
+- TTL 滚动续期（默认 30m），GC 周期 5m；绑定**仅存内存**，进程重启后重建（无外部存储依赖）
 - 请求失败自动解绑；成功后绑定跟随最终成功账号
 - **按模型判定可用性**：绑定只记 uid，而同一个会话可能换模型。账号被 6004 模型级限额后对其他模型仍可用，因此粘性按「该模型上是否可用」校验——在当前模型被限额时立即重分配，而不是被钉在这个号上直到轮换次数耗尽
 
@@ -330,6 +347,29 @@ curl -s http://localhost:7863/v1/chat/completions \
 
 > 鉴权规则：仅当 `api_key` 非空才校验 `Authorization: Bearer <api_key>`；**`api_key` 为空时上述端点直接放行**；`/healthz` 恒无鉴权。
 
+**控制台管理端点**（`console_password` 非空时需先登录，见 [Web 控制台](#web-控制台)）：
+
+| 端点 | 方法 | 说明 |
+|---|---|---|
+| `/` | `GET` | Web 控制台首页（与 API 同端口同源） |
+| `/login.html` | `GET` | 登录页（免登录访问） |
+| `/api/login` | `POST` | 登录，成功下发 `wb_session` Cookie |
+| `/api/logout` | `POST` | 退出登录，注销当前会话 |
+| `/api/session` | `GET` | 查询当前登录态 |
+| `/api/accounts/status` | `GET` | 账号深度状态（配额 / 签到 / 可用模型）；`?uid=` 指定单个，`?refresh=1` 跳过 30s 缓存 |
+| `/api/accounts/checkin` | `POST` | 手动触发签到（`?uid=`） |
+| `/api/credentials` | `GET` | 凭证列表（**脱敏，永不返回 token 原文**） |
+| `/api/credentials/upload` | `POST` | 手动粘贴 token 添加凭证 |
+| `/api/credentials/delete` | `POST` | 删除凭证（带路径穿越防护） |
+| `/api/credentials/reload` | `POST` | 重扫 `auths/` 并热更新账号池 |
+| `/api/credentials/oauth/start` | `POST` | 申请 CodeBuddy 登录链接 |
+| `/api/credentials/oauth/poll` | `POST` | 轮询登录结果并落盘凭证 |
+| `/api/key` | `GET`/`POST` | 读取 / 在线更新网关 `api_key` |
+| `/api/usage` | `GET` | Token 用量聚合（`range=1h\|today\|24h\|7d\|all`） |
+| `/api/usage/clear` | `POST` | 清空用量历史 |
+
+> ⚠️ `/v1/*` 走**独立的 Bearer `api_key` 鉴权**，不受控制台登录影响。若 `api_key` 为空且端口暴露在公网，**任何人都能调用你的额度**——公网部署时请务必设置 `api_key`。
+
 `/healthz` 响应示例（200 / 503 同结构，仅状态码与计数变化）：
 
 ```json
@@ -373,6 +413,63 @@ curl -s http://localhost:7863/v1/chat/completions \
 | `activity/growth/streak` | GET | 连登天数（只读 oracle，活跃自检用） |
 
 出站请求统一携带 `CLI/2.63.2 CodeBuddy/2.63.2` UA（可被 `upstream.user_agent` 覆盖）；聊天请求带账号头（`X-User-Id` 等），**永不携带 `X-Refresh-Token`**（该头只出现在 token 刷新请求）。
+
+## Web 控制台
+
+控制台与 API **同端口同源**托管：网关在 `:7863` 上同时提供 `/v1/*` 接口与 `/` 前端页面，前端所有请求都是同源相对路径，**不存在跨域问题**。
+
+访问 `http://<网关地址>:7863/` 即可（局域网或公网 IPv6 均可）。
+
+### 启用登录
+
+在 `config.json` 里设置 `console_password`：
+
+```json
+{
+  "listen": ":7863",
+  "console_password": "换成你自己的密码"
+}
+```
+
+- 为空（或缺省）= **不启用登录**，行为与未引入该功能时完全一致；
+- 设置后，**页面与 `/api/*` 管理接口**均要求登录，未登录时浏览器跳 `/login.html`、接口请求返回 401 JSON；
+- 会话 Cookie `wb_session`：HttpOnly（JS 不可读）、SameSite=Lax、有效期 7 天、**仅存内存**（进程重启即失效）；
+- 防暴力破解：单 IP 连续 5 次密码错误后锁定 5 分钟；
+- 也可用环境变量 `WB2A_CONSOLE_PASSWORD` 覆盖。
+
+**始终免登录**的路径：`/healthz`（探活）、`/login.html` 及其静态依赖、`/v1/*`（走独立 Bearer 鉴权）。
+
+### 面板说明
+
+| 面板 | 内容 |
+|---|---|
+| **概览仪表盘** | 账号总数 / 健康 / 冷却 / 停用计数、网关延迟、账号快速预览 |
+| **账号状态监测** | 每账号卡片：配额进度条 + 套餐名 + 周期结束时间、签到状态与一键签到按钮、可用模型标签、成功率 / 在途 / 软冷却 |
+| **凭证管理** | 凭证列表（昵称、文件名、Token 状态与剩余有效期、能否自动续期）、删除、重新扫描、手动粘贴 Token 添加、**OAuth 登录添加账号** |
+| **模型广场** | 可用模型列表（动态拉取，失败回落静态表），支持搜索，一键填入沙盒 |
+| **API 测试沙盒** | 在线流式对话，实时显示 TTFB 与 token 速率 |
+| **Token 用量统计** | 4 宫格看板 + SVG 面积图 + 模型排行 + 账号分布，支持 1h / today / 24h / 7d / all |
+| **客户端接入指南** | Cherry Studio / Chatbox 等客户端的一键配置复制 |
+| **连接设置** | 网关地址与 `api_key` 在线生成 / 同步 |
+
+### 关于账号状态查询
+
+「账号状态监测」会**真实请求上游接口**（配额、签到、可用模型、连登），因此：
+
+- 带 **30 秒缓存**，避免连点刷新把上游打爆；`?refresh=1` 可强制刷新；
+- **不做自动轮询**——只在首次进入该面板或你手动点「刷新全部」时请求；
+- 各项**独立降级**：某一项查询失败只在该项位置显示错误，不影响其他项。
+
+### OAuth 网页添加账号
+
+无需 SSH，全程在浏览器完成：
+
+1. 「凭证管理」→「登录添加账号」→「生成登录链接」；
+2. 在新窗口打开链接并完成 CodeBuddy 登录；
+3. 回到控制台点「我已登录，检查状态」；
+4. 凭证自动写入 `auths/` 并热加载，立即生效。
+
+> **实现要点**：落盘时的账号标识取自 **JWT 的 `sub`** 字段（实测与凭证文件里的 `account.uid` 完全一致），而非 token 响应体。因为 token 响应并不返回 `uid`，若改用哈希派生标识，**同一账号重复登录会在池中产生两条记录**，调度器会当成两个号轮换、白白消耗额度。
 
 ## 请求级日志
 
@@ -423,7 +520,7 @@ curl -s http://localhost:7863/v1/chat/completions \
 
 - 多账号复制 `auths/workbuddy-<uid>.json` 即可，池启动时自动对齐目录
 - Session 失效账号被禁用（`disabled_reason` 透出在 `/status`）后，可用 `./login.sh` 重新登录覆盖凭证；已持久化 `disabled=true` 的账号可在源码侧调用 `Pool.ReviveDisabled(uid)` 复活（`state.json` 中清除 `disabled` 标志）
-- 备份 = `auths/`（凭证）+ `data/state.json`（池状态：积分 / 冷却 / 计数）；配置 Upstash 后状态另镜像至 Redis（7 天 TTL）
+- 备份 = `auths/`（凭证）+ `data/state.json`（池状态：积分 / 冷却 / 熔断 / 计数）
 
 ## 安全与合规
 
@@ -513,7 +610,7 @@ curl -s http://localhost:7863/v1/chat/completions \
 | `activity_hours` 默认 `[10]` | `cmd/server/config.go:135` |
 | 活跃自检回读 streak | `internal/scheduler/scheduler.go:227`（`checkActivityStreak`） |
 | streak 端点 `activity/growth/streak` | `internal/upstream/travel.go:24`（常量）、`:139`（`GrowthStreak`） |
-| Redis 粘性镜像 7 天 TTL | `internal/redisstore/redisstore.go:21` |
+| 存储接口（纯内存 Noop，零外部依赖） | `internal/redisstore/redisstore.go` |
 | 静态模型表含 `deepseek-v4-flash` 等 | `internal/server/handler.go:146` |
 
 ## 问题反馈与 Issue 规范
