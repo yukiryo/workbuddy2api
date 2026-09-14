@@ -746,7 +746,9 @@ func (h *Handler) chatCompletions(w http.ResponseWriter, r *http.Request) {
 		if h.cfg.Upstream.PassthroughIP {
 			clientIP = upstream.ExtractClientIP(r)
 		}
-		rc, status, respBody, terr := h.cfg.Upstream.ChatStream(acct, body, clientIP, chatMeta)
+		// 传 r.Context()：客户端断连/请求取消立即中断在途上游调用并释放租约，
+		// 不再让"幽灵请求"占满账号在途名额直到 IdleTimeout。
+		rc, status, respBody, terr := h.cfg.Upstream.ChatStreamContext(r.Context(), acct, body, clientIP, chatMeta)
 		if terr != nil {
 			// 网络层抖动：只换号，不喂熔断计数（传输层错误对连续失败连坐熔断过于严苛）。
 			// 上游 client 已打 transport error 日志。
