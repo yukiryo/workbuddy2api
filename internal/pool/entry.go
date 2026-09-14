@@ -48,9 +48,29 @@ type Status struct {
 	LastSuccessTime   time.Time          `json:"last_success,omitempty"`
 	LastErrTime       time.Time          `json:"last_err,omitempty"`
 	// 运行态（不持久化）：在途请求数 + 熔断器状态。
+	//
+	// BreakerFails 是**连续失败计数**，不是"是否熔断"。达 breakerThreshold（默认 3）
+	// 才触发熔断，且成功/熔断/统一复活时清零。故 breaker_fails>0 但
+	// breaker_until 为零值 = 账号完全健康，只是最近有过失败。
+	// 前端曾把它当作"熔断中"判据，导致健康账号被标红（已在 State 里提供权威真值）。
 	InFlight     int       `json:"in_flight"`
 	BreakerFails int       `json:"breaker_fails"`
 	BreakerUntil time.Time `json:"breaker_until,omitempty"`
+	// BreakerRemaining 熔断剩余秒数（仅真正熔断时 >0）。
+	// 与 CoolRemaining 分开：后者只表示账号级软/硬冷却，不含熔断。
+	BreakerRemaining int64 `json:"breaker_remaining_sec,omitempty"`
+
+	// BreakerThreshold 触发熔断所需的连续失败数（供前端展示 "1/3" 这类进度）。
+	BreakerThreshold int `json:"breaker_threshold"`
+
+	// State 账号的**权威**健康状态（由后端按 healthy() 同一套谓词计算）。
+	// 前端应直接使用它，不要自行用 breaker_fails>0 之类的近似判断。
+	// 取值：ready | breaker | cooling | disabled
+	State string `json:"state"`
+	// StateLabel 上述状态的中文可读文案（供界面直接显示，避免各处重复映射）。
+	StateLabel string `json:"state_label"`
+	// Selectable 当前是否可被选号（等价于 healthy(now)）。
+	Selectable bool `json:"selectable"`
 }
 
 // RateLimitedModel 单个被限流模型的台账行（issue #36）。

@@ -522,8 +522,10 @@ class WorkBuddyApp {
   }
 
   generateStatusCardHtml(acc, deep) {
-    const borderClass = acc.disabled || acc.breaker_fails > 0 ? 'border-rose-500/30'
-      : (acc.cooling ? 'border-amber-500/30' : 'border-emerald-500/30');
+    // 边框色跟随权威状态（不再用 breaker_fails 近似）
+    const state = acc.state || this.inferAccountState(acc);
+    const borderClass = state === 'disabled' || state === 'breaker' ? 'border-rose-500/30'
+      : (state === 'cooling' ? 'border-amber-500/30' : 'border-emerald-500/30');
 
     // ---- 头部：昵称 + realm 域标签 + 状态徽章 ----
     const realmBadge = this.realmBadge(acc.realm);
@@ -1034,18 +1036,47 @@ class WorkBuddyApp {
   }
 
   // 账号状态徽章：统一走这里，避免各处重复判断（此前分散在三处，口径不一致）
+  //
+  // 状态真值一律取后端返回的 acc.state（由 pool.healthy() 同一套谓词计算），
+  // 前端**不再自行判断**。历史 bug：曾用 acc.breaker_fails > 0 当作"熔断中"，
+  // 但 breaker_fails 只是连续失败计数（阈值默认 3），失败 1~2 次的账号其实完全健康，
+  // 却被标红成"熔断中 ×1"，与 /status 的 disabled/cooling 计数矛盾。
   accountStateBadge(acc) {
-    if (acc.disabled) {
-      return `<span class="px-2 py-0.5 rounded-full text-[10px] font-semibold bg-rose-500/10 text-rose-500">已停用</span>`;
+    const state = acc.state || this.inferAccountState(acc);
+    switch (state) {
+      case 'disabled':
+        return `<span class="px-2 py-0.5 rounded-full text-[10px] font-semibold bg-rose-500/10 text-rose-500">已停用</span>`;
+      case 'breaker': {
+        // 用 breaker_remaining_sec（熔断专用字段）；cool_remaining_sec 只表示账号级冷却，
+        // 纯熔断时它是 0，用它会导致显示"熔断中"却没有剩余时间。
+        const left = acc.breaker_remaining_sec ? this.formatDuration(acc.breaker_remaining_sec) : '';
+        return `<span class="px-2 py-0.5 rounded-full text-[10px] font-semibold bg-rose-500/10 text-rose-500">熔断中${left ? ' ' + left : ''}</span>`;
+      }
+      case 'cooling': {
+        const left = acc.cool_remaining_sec ? this.formatDuration(acc.cool_remaining_sec) : '';
+        return `<span class="px-2 py-0.5 rounded-full text-[10px] font-semibold bg-amber-500/10 text-amber-500">冷却中${left ? ' ' + left : ''}</span>`;
+      }
+      default:
+        return `<span class="px-2 py-0.5 rounded-full text-[10px] font-semibold bg-emerald-500/10 text-emerald-500">就绪</span>`;
     }
-    if (acc.breaker_fails > 0) {
-      return `<span class="px-2 py-0.5 rounded-full text-[10px] font-semibold bg-rose-500/10 text-rose-500">熔断中 ×${acc.breaker_fails}</span>`;
-    }
-    if (acc.cooling) {
-      const left = acc.cool_remaining_sec ? this.formatDuration(acc.cool_remaining_sec) : '冷却';
-      return `<span class="px-2 py-0.5 rounded-full text-[10px] font-semibold bg-amber-500/10 text-amber-500">冷却 ${left}</span>`;
-    }
-    return `<span class="px-2 py-0.5 rounded-full text-[10px] font-semibold bg-emerald-500/10 text-emerald-500">就绪</span>`;
+  }
+
+  // inferAccountState 后端未提供 state 时（例如旧版二进制）的兜底推断。
+  // 口径必须与后端 statusOf 一致：disabled > 熔断 > 冷却 > 就绪。
+  // 注意：**不能**用 breaker_fails 判断熔断，只用 breaker_until 是否在未来。
+  inferAccountState(acc) {
+    if (acc.disabled) return 'disabled';
+    if (this.isFutureTime(acc.breaker_until)) return 'breaker';
+    if (acc.cooling) return 'cooling';
+    return 'ready';
+  }
+
+  // isFutureTime 判断零值时间/空值/过去时间均视为 false（Go 零值是 0001-01-01）。
+  isFutureTime(t) {
+    if (!t || typeof t !== 'string') return false;
+    if (t.startsWith('0001-')) return false;
+    const ms = Date.parse(t);
+    return Number.isFinite(ms) && ms > Date.now();
   }
 
   // 秒数 → 人类可读时长
@@ -1064,9 +1095,10 @@ class WorkBuddyApp {
   }
 
   generateAccountCardHtml(acc) {
-    const borderClass = acc.disabled ? 'border-rose-500/30'
-      : (acc.breaker_fails > 0 ? 'border-rose-500/30'
-      : (acc.cooling ? 'border-amber-500/30' : 'border-emerald-500/30'));
+    // 边框色跟随权威状态
+    const state = acc.state || this.inferAccountState(acc);
+    const borderClass = state === 'disabled' || state === 'breaker' ? 'border-rose-500/30'
+      : (state === 'cooling' ? 'border-amber-500/30' : 'border-emerald-500/30');
 
     const rows = [];
     rows.push(['成功 / 错误', `${acc.success_count || 0} / ${acc.err_total || 0}`]);
@@ -1074,7 +1106,12 @@ class WorkBuddyApp {
     rows.push(['连续软冷却', `${acc.soft_streak || 0} 次`]);
     if (acc.cool_kind) rows.push(['冷却类型', acc.cool_kind]);
     if (acc.cool_remaining_sec) rows.push(['剩余冷却', this.formatDuration(acc.cool_remaining_sec)]);
-    if (acc.breaker_fails) rows.push(['熔断失败数', acc.breaker_fails]);
+    if (acc.breaker_remaining_sec) rows.push(['熔断剩余', this.formatDuration(acc.breaker_remaining_sec)]);
+    // 连续失败按 "n/阈值" 展示，并说清它不等于熔断（否则运维会误读为故障）
+    if (acc.breaker_fails) {
+      const th = acc.breaker_threshold || 3;
+      rows.push(['连续失败', `${acc.breaker_fails} / ${th}${acc.breaker_fails >= th ? '（已熔断）' : '（未达熔断阈值）'}`]);
+    }
     if (acc.reason) rows.push(['状态原因', acc.reason]);
 
     const lastSuccess = acc.last_success && !acc.last_success.startsWith('0001')

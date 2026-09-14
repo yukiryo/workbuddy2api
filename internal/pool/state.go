@@ -416,18 +416,46 @@ func (p *Pool) statusOf(uid string, e *entry) Status {
 		InFlight:          int(e.inFlight.Load()),
 		BreakerFails:      e.fails,
 		BreakerUntil:      e.breakerUntil,
+		BreakerThreshold:  p.breakerThreshold,
 	}
+
+	// 权威健康状态：与选号用的 healthy() 同一套谓词，按优先级判定
+	// （disabled > 熔断 > 冷却 > 就绪）。判定顺序与 entry.healthy() 保持一致，
+	// 避免两处口径分叉。前端应直接消费 State，不要自行用 breaker_fails>0 近似。
+	switch {
+	case e.disabled:
+		st.State, st.StateLabel = "disabled", "已停用"
+	case now.Before(e.breakerUntil):
+		st.State, st.StateLabel = "breaker", "熔断中"
+	case now.Before(e.until):
+		st.State, st.StateLabel = "cooling", "冷却中"
+	default:
+		st.State, st.StateLabel = "ready", "就绪"
+	}
+	st.Selectable = st.State == "ready"
+
 	if st.Disabled {
 		// 禁用账号透出禁用原因（运维看不到为什么死）。
 		st.DisabledReason = e.reason
 	}
 	if st.Cooling {
 		// 冷却剩余秒数（向上取整，避免 0 显示为已到期）。
+		// **语义保持既有契约**：仅反映账号级软/硬冷却（e.until），不含熔断。
+		// 既有测试与运维口径依赖这一点，故不把熔断时间并进来。
 		st.CoolRemaining = int64(time.Until(e.until).Seconds() + 0.999)
 		if st.CoolRemaining < 0 {
 			st.CoolRemaining = 0
 		}
 		st.CoolKind = e.coolKind.String()
+	}
+	// 熔断剩余秒数（独立字段）。熔断是 cooling 的一个来源，但语义不同：
+	// cooling=true 可能纯粹因为熔断（此时 e.until 为零值、cool_remaining_sec=0），
+	// 界面需要独立的时间才能显示"熔断中，还有多久恢复"。
+	if now.Before(e.breakerUntil) {
+		st.BreakerRemaining = int64(time.Until(e.breakerUntil).Seconds() + 0.999)
+		if st.BreakerRemaining < 0 {
+			st.BreakerRemaining = 0
+		}
 	}
 	return st
 }
