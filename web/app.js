@@ -689,15 +689,21 @@ class WorkBuddyApp {
   }
 
   // 模型级限流展示（上游 6004 独立冷却：每账号每模型独立计时）
+  //
+  // 与账号级"熔断/冷却"是两个维度：模型限流只挡该模型，账号本身仍可选号、
+  // 其他模型照常可用。故这里同时给出两个时间：
+  //   until    = 网关冷却截止（到点会重试；受 soft_rate_max 封顶，可能早于上游重置）
+  //   reset_at = 上游声明的权威重置时刻
+  // 只显示 until 会让人以为那就是真正恢复点；只显示 reset_at 又会与"网关提前重试"的行为不符。
   rateLimitedModelsHtml(acc) {
     const list = acc.rate_limited_models;
     if (!Array.isArray(list) || list.length === 0) return '';
     const items = list.map(m => {
       const name = typeof m === 'string' ? m : (m.model || '');
-      const reset = typeof m === 'object' ? this.fmtResetAt(m) : '';
+      const times = typeof m === 'object' ? this.fmtRateLimitTimes(m) : '';
       return `<span class="inline-flex items-center gap-1 px-1.5 py-0.5 rounded text-[10px] font-mono bg-amber-500/10 text-amber-600 dark:text-amber-400"
-                    title="${this.escapeHtml(name)}${reset ? ' · ' + this.escapeHtml(reset) : ''}">
-        ${this.escapeHtml(name)}${reset ? ` <span class="opacity-70">${this.escapeHtml(reset)}</span>` : ''}
+                    title="${this.escapeHtml(name)}${times ? ' · ' + this.escapeHtml(times) : ''}">
+        ${this.escapeHtml(name)}${times ? ` <span class="opacity-70">${this.escapeHtml(times)}</span>` : ''}
       </span>`;
     }).join('');
     return `
@@ -709,17 +715,29 @@ class WorkBuddyApp {
           <span class="font-mono text-amber-500">${list.length} 个</span>
         </div>
         <div class="flex flex-wrap gap-1">${items}</div>
+        <p class="text-[10px] text-slate-400 leading-tight">
+          仅这些模型不可用，<strong>账号本身仍可选号</strong>，其他模型照常使用。
+        </p>
       </div>`;
   }
 
-  // 把限流模型的 reset_at 格式化为「还剩 X 分钟」
-  fmtResetAt(m) {
-    const raw = m.reset_at || m.resetAt || m.until;
+  // fmtRateLimitTimes 同时呈现「网关重试」与「上游重置」两个时刻。
+  fmtRateLimitTimes(m) {
+    const until = this.fmtRemain(m.until);
+    const reset = this.fmtRemain(m.reset_at || m.resetAt);
+    const parts = [];
+    if (until) parts.push(`重试 ${until}`);
+    if (reset && reset !== until) parts.push(`上游 ${reset}`);
+    return parts.join(' / ');
+  }
+
+  // fmtRemain 把绝对时间转成「还剩 X」（已过/无效返回空串）。
+  fmtRemain(raw) {
     if (!raw || String(raw).startsWith('0001')) return '';
     const t = new Date(raw).getTime();
     if (isNaN(t)) return '';
     const left = Math.round((t - Date.now()) / 1000);
-    if (left <= 0) return '已恢复';
+    if (left <= 0) return '';
     return this.formatDuration(left);
   }
 
@@ -1041,8 +1059,17 @@ class WorkBuddyApp {
   // 前端**不再自行判断**。历史 bug：曾用 acc.breaker_fails > 0 当作"熔断中"，
   // 但 breaker_fails 只是连续失败计数（阈值默认 3），失败 1~2 次的账号其实完全健康，
   // 却被标红成"熔断中 ×1"，与 /status 的 disabled/cooling 计数矛盾。
+  //
+  // 注意模型级限流（rate_limited_models）是**另一个维度**：只挡特定模型，
+  // 账号整体仍可选号。故它在"就绪"徽章上以角标形式并存表达，
+  // 而不是把徽章改成不可用——否则会让人误以为整个账号废了。
   accountStateBadge(acc) {
     const state = acc.state || this.inferAccountState(acc);
+    const rlCount = Array.isArray(acc.rate_limited_models) ? acc.rate_limited_models.length : 0;
+    const rlSuffix = rlCount > 0
+      ? ` <span class="opacity-75" title="${rlCount} 个模型限流中，账号本身仍可用">· ${rlCount} 模型限流</span>`
+      : '';
+
     switch (state) {
       case 'disabled':
         return `<span class="px-2 py-0.5 rounded-full text-[10px] font-semibold bg-rose-500/10 text-rose-500">已停用</span>`;
@@ -1057,7 +1084,7 @@ class WorkBuddyApp {
         return `<span class="px-2 py-0.5 rounded-full text-[10px] font-semibold bg-amber-500/10 text-amber-500">冷却中${left ? ' ' + left : ''}</span>`;
       }
       default:
-        return `<span class="px-2 py-0.5 rounded-full text-[10px] font-semibold bg-emerald-500/10 text-emerald-500">就绪</span>`;
+        return `<span class="px-2 py-0.5 rounded-full text-[10px] font-semibold bg-emerald-500/10 text-emerald-500">就绪${rlSuffix}</span>`;
     }
   }
 
