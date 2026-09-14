@@ -1,0 +1,52 @@
+feat(models): 按账号 realm 过滤模型列表 + 修复复制按钮 + 显示可复制的 model id
+
+## 问题 1：列出了不可用的"幽灵模型"
+
+池中只有 2 个 CN 账号、0 个 global 账号，但 /v1/models 列出 37 个模型，
+其中 21 个是 global:*。这些模型选了必然 503（无可选账号）。
+
+根因在 modelList：global 分支只看 GlobalEnabled 开关，池里没有 global
+账号时会**回落静态名单**（upstream.GlobalModelNames 的 21 个名字）。
+
+模型名带 realm 前缀是网关侧路由协议（见 resolveModel），前缀决定选号时
+去哪个分池捞账号。池里没有该 realm 的账号，该 realm 的模型就是不可用的——
+列出来等于撒谎。
+
+修复：modelList 先按 realm 统计账号数，只列**确有账号**的 realm：
+  无 global 账号 -> 不列 global:*
+  无 cn 账号     -> 不列 cn:*
+  两者都有       -> 全列
+
+实测：37 个 -> 16 个（只剩 CN）。
+
+## 问题 2：复制按钮点了没反应
+
+根因：navigator.clipboard 只在**安全上下文**（HTTPS / localhost）存在。
+控制台最常见访问方式是 http://192.168.x.x（局域网 IP）→ 非安全上下文 →
+navigator.clipboard 为 undefined → 原实现直接调 writeText 抛 TypeError。
+
+实测证据（CDP 无头浏览器）：
+  isSecureContext: false
+  clipboard API  : false      <- 确实不存在
+  execCommand    : true       <- 传统方案可用
+
+修复：三条路径依序降级
+  1. Clipboard API（安全上下文）
+  2. textarea + execCommand('copy')（非安全上下文传统方案）
+  3. 弹出手动复制框（前两者都不可用时兜底，不静默失败）
+
+## 问题 3：模型卡片不够直白
+
+- model id 改为大号等宽字突出显示（这是要填进客户端的东西）
+- 复制按钮改为显眼的实心按钮（原来是个不起眼的灰色小图标）
+- 复制内容是**完整可用 id**（如 cn:auto），不是裸名
+- global 卡片额外标注"出站裸名"，便于排查
+- 按 realm 分组展示（CN / GLOBAL 各自标题 + 说明 + 计数）
+- 搜索同时匹配完整 id 与裸名（搜 "gpt-5" 也能命中 global:gpt-5.x）
+- 复制/沙盒按钮改用 data-model-id 传值，避免内联 JS 字符串的引号注入
+
+## 测试
+
+更新两个断言旧行为的测试（无 global 账号时仍列 global）：
+- TestModelListNoGlobalAccountZeroProbe -> TestModelListNoGlobalAccountNoGlobalModels
+- TestModelsGlobalListGating 改为断言"双重门槛"（开关 + 确有账号）

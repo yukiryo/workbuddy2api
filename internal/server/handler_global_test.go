@@ -59,8 +59,13 @@ func newRealmFake(t *testing.T) *realmFake {
 // TestChatRealmSelectionAndBodyRewrite 断言 realm 贯穿：
 // global: 前缀 → 全局号 + 出站 body 剥前缀 + /console 路径 + ensureConsoleSystem 补 system；
 // 裸名 → CN 号 + /v2 路径 + body 原样（零回归）。
-// TestModelsGlobalListGating 断言 global 名单（§7.2 21 名）在 GlobalEnabled=true（缺省）时
-// 列出（带 global: 前缀）、false（逃生门）时不出现——CN 模型恒加 cn: 前缀。
+// TestModelsGlobalListGating 断言 global 名单的**双重门槛**：
+// 既要有开关 GlobalEnabled=true，也要池中确有 global 账号。
+//
+// 行为变更说明（2026-09-14）：此前只看开关，池里没有 global 账号也会列出 21 个
+// global: 名字（回落静态名单）。这让客户端看到选了必然 503 的"幽灵模型"。
+// 现在要求「该 realm 有账号」才列出——CN 侧同理（无 cn 账号则不列 cn:）。
+// CN 模型恒加 cn: 前缀。
 func TestModelsGlobalListGating(t *testing.T) {
 	// 关闭动态（无健康 CN 账号）→ 回退静态表，便于精确计数。
 	resetModelsCache()
@@ -83,11 +88,12 @@ func TestModelsGlobalListGating(t *testing.T) {
 	if !hasCN {
 		t.Error("cn:glm-5.2 missing from list")
 	}
-	if !hasGlobal {
-		t.Error("GlobalEnabled=true: global: models should be listed (PLAN §7.2)")
+	// 该池只有 CN 号（uid=u1，无 domain → cn realm），故 global 不应出现。
+	if hasGlobal {
+		t.Error("池中无 global 账号：不应列出 global: 模型（避免不可用的幽灵模型）")
 	}
 
-	// 缺省（GlobalEnabled=false）不列 global 名单。
+	// GlobalEnabled=false（逃生门）同样不列 global。
 	h2 := NewHandler(Config{Pool: p, Upstream: up, GlobalEnabled: false})
 	for _, m := range h2.modelList() {
 		if strings.HasPrefix(m["id"].(string), "global:") {

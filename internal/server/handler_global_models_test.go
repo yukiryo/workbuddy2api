@@ -140,8 +140,13 @@ func TestModelListTwoFamilies(t *testing.T) {
 	// fetchDynamicModels 会失败回退静态——这里不断言 CN 调用，避免耦合 CN 缓存重置时序）。
 }
 
-// TestModelListNoGlobalAccountZeroProbe 无 global 账号：直接静态名单，探测零调用。
-func TestModelListNoGlobalAccountZeroProbe(t *testing.T) {
+// TestModelListNoGlobalAccountNoGlobalModels 无 global 账号：列表不含任何 global: 模型。
+//
+// 行为变更说明（2026-09-14）：此前无 global 账号时会**回落静态名单**（21 个 global: 名字），
+// 导致客户端看到一堆选了也没账号可接的"幽灵模型"。模型名带 realm 前缀是网关侧路由
+// 协议，前缀决定去哪个分池捞号——池里没有 global 账号，global: 模型就是不可用的，
+// 列出来等于撒谎。现在改为：无 global 账号 → 不列 global。
+func TestModelListNoGlobalAccountNoGlobalModels(t *testing.T) {
 	auth.SetGlobalEnabled(true)
 	t.Cleanup(func() { auth.SetGlobalEnabled(true) })
 	resetModelsCache()
@@ -153,17 +158,20 @@ func TestModelListNoGlobalAccountZeroProbe(t *testing.T) {
 	h := NewHandler(Config{Pool: p, Upstream: cf.up, GlobalEnabled: true})
 
 	got := h.modelList()
-	var globIDs []string
 	for _, m := range got {
 		if id, ok := m["id"].(string); ok && strings.HasPrefix(id, "global:") {
-			globIDs = append(globIDs, strings.TrimPrefix(id, "global:"))
+			t.Fatalf("无 global 账号时不应列出 global 模型，实际出现 %q", id)
 		}
 	}
-	if len(globIDs) != len(upstream.GlobalModelNames) {
-		t.Fatalf("no-global-account: global ids=%d want %d (static only)", len(globIDs), len(upstream.GlobalModelNames))
+	// CN 模型仍应正常列出（有 cn 账号）。
+	var cnCount int
+	for _, m := range got {
+		if id, ok := m["id"].(string); ok && strings.HasPrefix(id, "cn:") {
+			cnCount++
+		}
 	}
-	if !reflect.DeepEqual(globIDs, upstream.GlobalModelNames) {
-		t.Errorf("no-global-account: global names != static GlobalModelNames")
+	if cnCount == 0 {
+		t.Error("有 cn 账号时应列出 cn: 模型")
 	}
 	cnt, _, _, _ := cf.snapshot()
 	if cnt != 0 {

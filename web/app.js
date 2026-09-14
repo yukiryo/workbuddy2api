@@ -1115,49 +1115,158 @@ class WorkBuddyApp {
     }
   }
 
-  renderModels(models) {
-    document.getElementById('stat-models-count').textContent = models.length;
-    document.getElementById('nav-models-count').textContent = models.length;
+  // 解析模型 id 的 realm 前缀（网关路由协议：cn:xxx / global:xxx）。
+  // 无前缀视为 cn（与后端 resolveModel 同语义）。
+  parseModelId(id) {
+    const s = String(id || '');
+    const i = s.indexOf(':');
+    if (i > 0) {
+      const p = s.slice(0, i);
+      if (p === 'cn' || p === 'global') return { realm: p, bare: s.slice(i + 1) };
+    }
+    return { realm: 'cn', bare: s };
+  }
 
+  renderModels(models) {
     const container = document.getElementById('models-container');
     if (!container) return;
 
+    // 统计按 realm 分组（用于导航角标与分组标题）
+    const groups = { cn: [], global: [] };
+    models.forEach(m => {
+      const { realm } = this.parseModelId(m.id);
+      (groups[realm] || groups.cn).push(m);
+    });
+
+    // 角标显示总数（只统计当前真正可用的）
+    const totalEl = document.getElementById('stat-models-count');
+    const navEl = document.getElementById('nav-models-count');
+    if (totalEl) totalEl.textContent = models.length;
+    if (navEl) navEl.textContent = models.length;
+
     if (models.length === 0) {
       container.innerHTML = `
-        <div class="col-span-full text-center py-12 text-slate-400 text-xs">
-          暂无已注册模型（网关可能正在加载凭证）
-        </div>
-      `;
+        <div class="col-span-full text-center py-12 text-slate-400 text-xs space-y-1">
+          <p>暂无可用模型</p>
+          <p class="text-[11px]">请先在「凭证管理」中添加账号</p>
+        </div>`;
+      if (window.lucide) lucide.createIcons();
       return;
     }
 
-    container.innerHTML = models.map(m => `
-      <div class="p-5 rounded-2xl bg-white dark:bg-dark-card border border-slate-200 dark:border-dark-border shadow-sm flex flex-col justify-between hover:border-indigo-500/50 transition-colors">
-        <div>
-          <div class="flex items-start justify-between gap-2 mb-2">
-            <span class="px-2 py-0.5 rounded-lg text-[10px] font-mono bg-indigo-50 dark:bg-indigo-950/60 text-indigo-600 dark:text-indigo-400 font-semibold uppercase">
-              Chat Model
-            </span>
-            <button onclick="app.copyText('${m.id}')" class="p-1.5 rounded-lg text-slate-400 hover:text-slate-200 hover:bg-slate-100 dark:hover:bg-slate-800 transition-colors" title="复制模型ID">
-              <i data-lucide="copy" class="w-3.5 h-3.5"></i>
-            </button>
-          </div>
-          <h4 class="text-sm font-bold font-mono text-slate-800 dark:text-slate-100 mb-1">${m.id}</h4>
-          <p class="text-[11px] text-slate-400">腾讯云 CodeBuddy 官方推理模型，经网关标准化 OpenAI 包装</p>
-        </div>
-        <div class="mt-4 pt-3 border-t border-slate-100 dark:border-slate-800/80 flex items-center justify-between text-[11px] text-slate-400">
-          <span>所有者: ${m.owned_by || 'tencent'}</span>
-          <button onclick="app.useModelInPlayground('${m.id}')" class="text-indigo-500 hover:text-indigo-400 font-medium text-xs">在沙盒测试 →</button>
-        </div>
-      </div>
-    `).join('');
+    // 分组渲染：只渲染有模型的分组，避免出现空标题
+    const sections = [];
+    if (groups.cn.length) {
+      sections.push(this.renderModelGroup('CN', 'cn', groups.cn,
+        '国内域（codebuddy.cn）。模型名建议直接用裸名，如 <code class="font-mono">auto</code>'));
+    }
+    if (groups.global.length) {
+      sections.push(this.renderModelGroup('GLOBAL', 'global', groups.global,
+        '国际域（workbuddy.ai）。<strong>必须带 <code class="font-mono">global:</code> 前缀</strong>，否则会路由到 CN 池'));
+    }
 
+    container.className = 'space-y-6';
+    container.innerHTML = sections.join('');
     if (window.lucide) lucide.createIcons();
   }
 
+  // renderModelGroup 渲染一个 realm 分组（标题 + 说明 + 卡片网格）。
+  renderModelGroup(label, realm, list, hint) {
+    const isGlobal = realm === 'global';
+    const badgeCls = isGlobal
+      ? 'bg-violet-500/10 text-violet-500 border-violet-500/20'
+      : 'bg-sky-500/10 text-sky-500 border-sky-500/20';
+
+    const cards = list.map(m => this.renderModelCard(m, realm)).join('');
+
+    return `
+      <div class="space-y-3">
+        <div class="flex flex-wrap items-center gap-2">
+          <span class="px-2 py-0.5 rounded-lg text-[10px] font-semibold border ${badgeCls}">${label}</span>
+          <span class="text-xs text-slate-400">${list.length} 个模型</span>
+          <span class="text-[11px] text-slate-400 hidden sm:inline">${hint}</span>
+        </div>
+        <div class="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-4">${cards}</div>
+      </div>`;
+  }
+
+  // renderModelCard 单个模型卡片。model id 用大号等宽字显示，并配一个显眼的复制按钮
+  // （复制的是**填进客户端就能用**的完整 id）。
+  renderModelCard(m, realm) {
+    const id = String(m.id || '');
+    const { bare } = this.parseModelId(id);
+    const isGlobal = realm === 'global';
+    const idCls = isGlobal ? 'text-violet-600 dark:text-violet-400' : 'text-sky-600 dark:text-sky-400';
+
+    const ctx = m.context_length ? this.formatNumberCompact(m.context_length) : '--';
+    const maxOut = m.max_output_tokens ? this.formatNumberCompact(m.max_output_tokens) : '--';
+
+    return `
+      <div class="p-4 sm:p-5 rounded-2xl bg-white dark:bg-dark-card border border-slate-200 dark:border-dark-border shadow-sm flex flex-col justify-between hover:border-indigo-500/50 transition-colors">
+        <div class="space-y-3">
+          <!-- model id 主体：等宽大字 + 复制按钮 -->
+          <div class="flex items-start justify-between gap-2">
+            <div class="min-w-0 flex-1">
+              <div class="text-[10px] text-slate-400 mb-1">模型 ID</div>
+              <code class="block text-sm font-bold font-mono ${idCls} break-all leading-snug">${this.escapeHtml(id)}</code>
+            </div>
+            <!-- id 走 data- 属性传递（HTML 上下文已转义），避免内联 JS 字符串的引号注入问题 -->
+            <button data-model-id="${this.escapeHtml(id)}" onclick="app.copyModelId(this)"
+                    class="flex-shrink-0 flex items-center gap-1 px-2.5 py-1.5 rounded-lg bg-indigo-600 hover:bg-indigo-500 text-white text-[10px] font-semibold transition-colors"
+                    title="复制模型 ID：${this.escapeHtml(id)}">
+              <i data-lucide="copy" class="w-3 h-3"></i>
+              <span>复制</span>
+            </button>
+          </div>
+
+          <!-- 规格 -->
+          <div class="grid grid-cols-2 gap-2 text-[10px] text-slate-400">
+            <div class="flex items-center justify-between">
+              <span>上下文</span>
+              <span class="font-mono text-slate-500 dark:text-slate-300">${ctx}</span>
+            </div>
+            <div class="flex items-center justify-between">
+              <span>最大输出</span>
+              <span class="font-mono text-slate-500 dark:text-slate-300">${maxOut}</span>
+            </div>
+          </div>
+
+          ${isGlobal && bare !== id ? `
+          <div class="p-2 rounded-lg bg-violet-500/5 border border-violet-500/15 text-[10px] text-violet-600 dark:text-violet-400 break-all">
+            出站裸名：<code class="font-mono">${this.escapeHtml(bare)}</code>
+          </div>` : ''}
+        </div>
+
+        <div class="mt-3 pt-3 border-t border-slate-100 dark:border-slate-800/80 flex items-center justify-between text-[11px] text-slate-400">
+          <span>${this.escapeHtml(m.owned_by || 'workbuddy')}</span>
+          <button data-model-id="${this.escapeHtml(id)}" onclick="app.useModelId(this)" class="text-indigo-500 hover:text-indigo-400 font-medium">在沙盒测试 →</button>
+        </div>
+      </div>`;
+  }
+
+  // copyModelId 从按钮的 data-model-id 取完整 id 并复制（客户端可直接填的形态）。
+  copyModelId(btn) {
+    const id = btn && btn.getAttribute('data-model-id');
+    if (!id) return;
+    this.copyText(id);
+  }
+
+  // useModelId 从按钮的 data-model-id 取 id 并送入沙盒。
+  useModelId(btn) {
+    const id = btn && btn.getAttribute('data-model-id');
+    if (!id) return;
+    this.useModelInPlayground(id);
+  }
+
   filterModels() {
-    const query = (document.getElementById('model-search-input')?.value || '').toLowerCase();
-    const filtered = this.cachedModels.filter(m => m.id.toLowerCase().includes(query));
+    const query = (document.getElementById('model-search-input')?.value || '').trim().toLowerCase();
+    if (!query) { this.renderModels(this.cachedModels); return; }
+    // 搜索时同时匹配完整 id 与裸名，方便用户按「gpt-5」这类片段找
+    const filtered = this.cachedModels.filter(m => {
+      const id = String(m.id || '').toLowerCase();
+      const { bare } = this.parseModelId(m.id);
+      return id.includes(query) || bare.toLowerCase().includes(query);
+    });
     this.renderModels(filtered);
   }
 
@@ -1379,12 +1488,113 @@ class WorkBuddyApp {
   }
 
   // 复制工具
+  // 复制文本到剪贴板。
+  //
+  // 为什么必须多路径降级：navigator.clipboard 只在**安全上下文**（HTTPS 或
+  // localhost）存在。本控制台最常见的访问方式是 http://192.168.x.x（局域网 IP），
+  // 属于非安全上下文，此时 navigator.clipboard 为 undefined。
+  // 原实现直接调 navigator.clipboard.writeText(...)，在非安全上下文会抛
+  // TypeError，表现为「点了复制按钮没任何反应」。
+  //
+  // 三条路径依序尝试：
+  //   1. Clipboard API（安全上下文，最干净）
+  //   2. textarea + execCommand('copy')（非安全上下文下的传统方案）
+  //   3. 弹出手动复制框（前两者都不可用时的兜底，保证功能不丢）
   copyText(text) {
-    navigator.clipboard.writeText(text).then(() => {
-      this.showToast(`已复制: ${text}`, 'success');
-    }).catch(() => {
-      this.showToast('复制失败，请手动选取', 'warning');
-    });
+    const value = String(text == null ? '' : text);
+    if (!value) return;
+    const done = () => this.showToast(`已复制: ${value}`, 'success');
+
+    // 路径 1：现代 Clipboard API
+    if (window.isSecureContext && navigator.clipboard && navigator.clipboard.writeText) {
+      navigator.clipboard.writeText(value)
+        .then(done)
+        .catch(() => {
+          if (this.copyViaTextarea(value)) done();
+          else this.showManualCopy(value);
+        });
+      return;
+    }
+
+    // 路径 2：execCommand（非安全上下文）
+    if (this.copyViaTextarea(value)) {
+      done();
+      return;
+    }
+
+    // 路径 3：手动复制兜底（不静默失败）
+    this.showManualCopy(value);
+  }
+
+  // copyViaTextarea 用临时 textarea + document.execCommand('copy')。
+  // 返回是否成功。该方法在非安全上下文下依然可用（Chrome/Edge/Safari 均支持）。
+  copyViaTextarea(value) {
+    let ta = null;
+    try {
+      ta = document.createElement('textarea');
+      ta.value = value;
+      ta.setAttribute('readonly', '');
+      // 不能用 display:none / visibility:hidden——那样无法 select()；
+      // 用固定定位移出视口，既不遮挡也不影响滚动。
+      ta.style.position = 'fixed';
+      ta.style.top = '0';
+      ta.style.left = '0';
+      ta.style.width = '1px';
+      ta.style.height = '1px';
+      ta.style.padding = '0';
+      ta.style.border = 'none';
+      ta.style.outline = 'none';
+      ta.style.boxShadow = 'none';
+      ta.style.background = 'transparent';
+      ta.style.opacity = '0';
+      document.body.appendChild(ta);
+      ta.focus();
+      ta.select();
+      ta.setSelectionRange(0, value.length);
+      const ok = document.execCommand('copy');
+      return !!ok;
+    } catch (_) {
+      return false;
+    } finally {
+      if (ta && ta.parentNode) ta.parentNode.removeChild(ta);
+    }
+  }
+
+  // showManualCopy 弹出可手动复制的文本框（自动复制全不可用时的最后手段）。
+  // 不静默失败：用户至少能看到并复制到内容。
+  showManualCopy(value) {
+    const old = document.getElementById('manual-copy-modal');
+    if (old) old.remove();
+
+    const wrap = document.createElement('div');
+    wrap.id = 'manual-copy-modal';
+    wrap.className = 'fixed inset-0 z-[60] bg-slate-900/60 backdrop-blur-sm flex items-center justify-center p-4';
+    wrap.innerHTML = `
+      <div class="w-full max-w-md rounded-2xl bg-white dark:bg-dark-card border border-slate-200 dark:border-dark-border shadow-2xl p-5 space-y-3">
+        <div class="flex items-start justify-between gap-3">
+          <div>
+            <h3 class="text-sm font-bold">请手动复制</h3>
+            <p class="text-[11px] text-slate-400 mt-1">当前浏览器环境不允许自动写入剪贴板（通常因为以 HTTP + IP 方式访问）。请按 Ctrl/Cmd+C 复制下方内容。</p>
+          </div>
+          <button id="manual-copy-close" class="p-1 rounded-lg text-slate-400 hover:text-slate-600 dark:hover:text-slate-200">
+            <i data-lucide="x" class="w-4 h-4"></i>
+          </button>
+        </div>
+        <textarea id="manual-copy-text" readonly
+          class="w-full h-24 p-3 text-xs font-mono rounded-xl bg-slate-50 dark:bg-slate-900 border border-slate-200 dark:border-slate-800 focus:outline-none focus:border-indigo-500 resize-none"></textarea>
+      </div>`;
+    document.body.appendChild(wrap);
+
+    const ta = document.getElementById('manual-copy-text');
+    ta.value = value;
+    ta.focus();
+    ta.select();
+
+    const close = () => wrap.remove();
+    document.getElementById('manual-copy-close').onclick = close;
+    wrap.onclick = (e) => { if (e.target === wrap) close(); };
+
+    if (window.lucide) lucide.createIcons();
   }
 
   copyId(id) {

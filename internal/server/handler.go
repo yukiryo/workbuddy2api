@@ -379,41 +379,64 @@ func (h *Handler) models(w http.ResponseWriter, r *http.Request) {
 var globalModels = upstream.GlobalModelNames
 
 // modelList 动态获取模型列表并包装成 OpenAI 格式（含 context_length）。
-// CN 模型输出统一加 "cn:" 前缀（gateway 路由协议，与 resolveModel 对称）。
-// 动态失败回退静态表；global.enabled=false（显式逃生门）时只列 CN（global 名单不出现）。
+//
+// 只列出**当前真的可用**的 realm 的模型：
+//   - 池中没有 global 账号 → 不列任何 global: 模型
+//   - 池中没有 cn 账号 → 不列任何 cn: 模型
+//   - 两者都有 → 全列
+//
+// 为什么必须按账号过滤：模型名带 realm 前缀是**网关侧的路由协议**（见 resolveModel），
+// 前缀决定选号时去哪个分池捞账号。若池里没有 global 账号却仍列出 global: 模型，
+// 客户端选了它只会得到「无可用账号」——列表在撒谎。此前 fetchGlobalModels 在
+// 无 global 账号时回落静态名单（21 个名字），正是这个问题的来源。
+//
+// CN 模型输出统一加 "cn:" 前缀（与 resolveModel 对称；该前缀在出站前会被剥离）。
+// 动态拉取失败回退静态表；global.enabled=false（显式逃生门）时不列 global。
 func (h *Handler) modelList() []map[string]any {
+	// 按 realm 统计账号数，决定哪些域该出现在列表里。
+	cnTotal, _, _, _, _ := h.cfg.Pool.CountsDetailedForRealm("cn")
+	glTotal, _, _, _, _ := h.cfg.Pool.CountsDetailedForRealm("global")
+
+	// 客户端能否用某个域，取决于「该域有没有账号」——即使全部冷却也要列出，
+	// 因为账号随时可能恢复；但**一个都没有**就完全没有可用性可言。
+	showCN := cnTotal > 0
+	showGlobal := h.cfg.GlobalEnabled && glTotal > 0
+
 	out := make([]map[string]any, 0, len(staticModels)+len(globalModels))
-	if infos := h.fetchDynamicModels(); len(infos) > 0 {
-		for _, mi := range infos {
-			entry := map[string]any{
-				"id":                "cn:" + mi.ID,
-				"object":            "model",
-				"created":           1753600000,
-				"owned_by":          "workbuddy",
-				"context_length":    mi.ContextWindow,
-				"max_output_tokens": mi.MaxTokens,
+
+	if showCN {
+		if infos := h.fetchDynamicModels(); len(infos) > 0 {
+			for _, mi := range infos {
+				entry := map[string]any{
+					"id":                "cn:" + mi.ID,
+					"object":            "model",
+					"created":           1753600000,
+					"owned_by":          "workbuddy",
+					"context_length":    mi.ContextWindow,
+					"max_output_tokens": mi.MaxTokens,
+				}
+				if mi.ContextWindow == 0 {
+					entry["context_length"] = 131072 // 兜底
+				}
+				out = append(out, entry)
 			}
-			if mi.ContextWindow == 0 {
-				entry["context_length"] = 131072 // 兜底
+		} else {
+			for _, m := range staticModels {
+				e := make(map[string]any, len(m)+1)
+				for k, v := range m {
+					e[k] = v
+				}
+				if id, ok := m["id"].(string); ok {
+					e["id"] = "cn:" + id
+				}
+				out = append(out, e)
 			}
-			out = append(out, entry)
-		}
-	} else {
-		for _, m := range staticModels {
-			e := make(map[string]any, len(m)+1)
-			for k, v := range m {
-				e[k] = v
-			}
-			if id, ok := m["id"].(string); ok {
-				e["id"] = "cn:" + id
-			}
-			out = append(out, e)
 		}
 	}
-	// global 模型名单：仅 GlobalEnabled=true 时列出（逃生门）。
-	// 名单 = 探测结果 ∪ §7.2 静态（fetchGlobalModels 内合并去重）；无 global 账号时
-	// 直接静态名单且零上游调用。
-	if h.cfg.GlobalEnabled {
+
+	// global 模型名单：需同时满足「开关打开」且「池中确有 global 账号」。
+	// 名单 = 探测结果 ∪ §7.2 静态（fetchGlobalModels 内合并去重）。
+	if showGlobal {
 		for _, id := range h.fetchGlobalModels() {
 			out = append(out, map[string]any{
 				"id":             "global:" + id,
