@@ -7,7 +7,7 @@ data/
 .env
 .env.*
 
-# Binaries (anchored to repo root only — bare "login"/"credit" would also ignore cmd/login/, cmd/credit/)
+# Binaries (anchored to repo root only - bare "login"/"credit" would also ignore cmd/login/, cmd/credit/)
 /login
 /credit
 /wb2api
@@ -15,6 +15,9 @@ data/
 
 # Config with secrets (use config.example.json)
 config.json
+# Exception: the AI-governance action's prompt template is not a secret, but the
+# rule above matches it by basename. Keep it tracked -- the action needs it at runtime.
+!.github/actions/ai-governance/config.json
 
 # Build artifacts
 *.tmp
@@ -31,7 +34,7 @@ PLAN.md
 SPEC.md
 docs/
 
-# 设计/计划文档（但 README 必须进版本库，含英文版）
+# Design / planning docs (README must stay tracked, including the English version)
 *.md
 !README.md
 !README.en.md
