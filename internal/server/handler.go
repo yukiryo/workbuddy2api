@@ -126,6 +126,7 @@ func NewHandler(cfg Config) *Handler {
 	h.mux.HandleFunc("GET /api/key", h.apiGetKey)
 	h.mux.HandleFunc("POST /api/key", h.apiSetKey)
 	h.mux.HandleFunc("GET /api/usage", h.apiGetUsage)
+	h.mux.HandleFunc("GET /api/usage/records", h.apiGetUsageRecords)
 	h.mux.HandleFunc("POST /api/usage/clear", h.apiClearUsage)
 
 	// 控制台登录会话（未配置密码时全部退化为放行）

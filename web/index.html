@@ -659,8 +659,25 @@ resp = client.chat.completions.create(
             </div>
           </div>
 
-          <!-- 4 宫格核心指标卡 -->
+          <!-- 核心指标卡：成本(积分) 与 真实输出 为主，token 总量为参考 -->
           <div class="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 xl:grid-cols-5 gap-4">
+            <!-- 消耗积分（成本主指标） -->
+            <div class="p-5 rounded-2xl bg-amber-500/5 dark:bg-amber-500/5 border border-amber-500/30 relative overflow-hidden">
+              <div class="flex items-center justify-between">
+                <span class="text-xs font-semibold text-amber-600 dark:text-amber-400">消耗积分（真实成本）</span>
+                <div class="w-8 h-8 rounded-xl bg-amber-500/15 text-amber-500 flex items-center justify-center">
+                  <i data-lucide="coins" class="w-4 h-4"></i>
+                </div>
+              </div>
+              <div class="mt-3 flex items-baseline gap-2">
+                <span id="usage-total-credit" class="text-3xl font-black tracking-tight font-mono text-amber-600 dark:text-amber-400">0</span>
+                <span class="text-xs text-slate-400">credits</span>
+              </div>
+              <div class="mt-2 text-[10px] text-slate-400">
+                平均每次 <span id="usage-avg-credit" class="font-mono">--</span>
+              </div>
+            </div>
+
             <!-- 总请求数 -->
             <div class="p-5 rounded-2xl bg-white dark:bg-dark-card border border-slate-200 dark:border-dark-border relative overflow-hidden">
               <div class="flex items-center justify-between">
@@ -673,62 +690,54 @@ resp = client.chat.completions.create(
                 <span id="usage-total-requests" class="text-2xl font-black tracking-tight font-mono">0</span>
                 <span class="text-xs text-slate-400">次</span>
               </div>
-            </div>
-
-            <!-- 总 Token 消耗 -->
-            <div class="p-5 rounded-2xl bg-white dark:bg-dark-card border border-slate-200 dark:border-dark-border relative overflow-hidden">
-              <div class="flex items-center justify-between">
-                <span class="text-xs text-slate-400">总 Token 消耗</span>
-                <div class="w-8 h-8 rounded-xl bg-indigo-500/10 text-indigo-500 flex items-center justify-center">
-                  <i data-lucide="coins" class="w-4 h-4"></i>
-                </div>
-              </div>
-              <div class="mt-3 flex items-baseline gap-2">
-                <span id="usage-total-tokens" class="text-2xl font-black tracking-tight font-mono text-indigo-500">0</span>
-                <span id="usage-total-tokens-raw" class="text-[11px] text-slate-400 font-mono"></span>
+              <div class="mt-2 text-[10px] text-slate-400">
+                平均耗时 <span id="usage-avg-duration" class="font-mono">--</span>
               </div>
             </div>
 
-            <!-- Prompt Token -->
+            <!-- 输出 Completion Token（真实产出） -->
             <div class="p-5 rounded-2xl bg-white dark:bg-dark-card border border-slate-200 dark:border-dark-border relative overflow-hidden">
               <div class="flex items-center justify-between">
-                <span class="text-xs text-slate-400">输入 Prompt Tokens</span>
-                <div class="w-8 h-8 rounded-xl bg-emerald-500/10 text-emerald-500 flex items-center justify-center">
-                  <i data-lucide="arrow-down-left" class="w-4 h-4"></i>
-                </div>
-              </div>
-              <div class="mt-3 flex items-baseline gap-2">
-                <span id="usage-prompt-tokens" class="text-2xl font-black tracking-tight font-mono">0</span>
-                <span class="text-xs text-slate-400">tokens</span>
-              </div>
-            </div>
-
-            <!-- Completion Token -->
-            <div class="p-5 rounded-2xl bg-white dark:bg-dark-card border border-slate-200 dark:border-dark-border relative overflow-hidden">
-              <div class="flex items-center justify-between">
-                <span class="text-xs text-slate-400">输出 Completion Tokens</span>
+                <span class="text-xs text-slate-400">输出 Tokens</span>
                 <div class="w-8 h-8 rounded-xl bg-purple-500/10 text-purple-500 flex items-center justify-center">
                   <i data-lucide="arrow-up-right" class="w-4 h-4"></i>
                 </div>
               </div>
               <div class="mt-3 flex items-baseline gap-2">
                 <span id="usage-completion-tokens" class="text-2xl font-black tracking-tight font-mono">0</span>
-                <span class="text-xs text-slate-400">tokens</span>
+                <span id="usage-completion-tokens-raw" class="text-[11px] text-slate-400 font-mono"></span>
               </div>
+              <div class="mt-2 text-[10px] text-slate-400">模型真实生成量</div>
             </div>
 
-            <!-- 消耗积分（后端 total_credit） -->
+            <!-- 输入 Prompt Token（含重复计数，标注说明） -->
             <div class="p-5 rounded-2xl bg-white dark:bg-dark-card border border-slate-200 dark:border-dark-border relative overflow-hidden">
               <div class="flex items-center justify-between">
-                <span class="text-xs text-slate-400">消耗积分</span>
-                <div class="w-8 h-8 rounded-xl bg-amber-500/10 text-amber-500 flex items-center justify-center">
-                  <i data-lucide="coins" class="w-4 h-4"></i>
+                <span class="text-xs text-slate-400">输入 Tokens</span>
+                <div class="w-8 h-8 rounded-xl bg-emerald-500/10 text-emerald-500 flex items-center justify-center">
+                  <i data-lucide="arrow-down-left" class="w-4 h-4"></i>
                 </div>
               </div>
               <div class="mt-3 flex items-baseline gap-2">
-                <span id="usage-total-credit" class="text-2xl font-black tracking-tight font-mono">0</span>
-                <span class="text-xs text-slate-400">credits</span>
+                <span id="usage-prompt-tokens" class="text-2xl font-black tracking-tight font-mono">0</span>
+                <span id="usage-prompt-tokens-raw" class="text-[11px] text-slate-400 font-mono"></span>
               </div>
+              <!-- 关键提示：客户端会话内每轮重发全部历史，该值是累计重发量 -->
+              <div id="usage-prompt-note" class="mt-2 text-[10px] text-amber-600 dark:text-amber-400 leading-tight"></div>
+            </div>
+
+            <!-- 总 Token（参考值） -->
+            <div class="p-5 rounded-2xl bg-white dark:bg-dark-card border border-slate-200 dark:border-dark-border relative overflow-hidden">
+              <div class="flex items-center justify-between">
+                <span class="text-xs text-slate-400">总 Token（参考）</span>
+                <div class="w-8 h-8 rounded-xl bg-indigo-500/10 text-indigo-500 flex items-center justify-center">
+                  <i data-lucide="bar-chart-2" class="w-4 h-4"></i>
+                </div>
+              </div>
+              <div class="mt-3 flex items-baseline gap-2">
+                <span id="usage-total-tokens" class="text-2xl font-black tracking-tight font-mono text-indigo-500">0</span>
+              </div>
+              <div class="mt-2 text-[10px] text-slate-400">含上下文重复计数</div>
             </div>
           </div>
 
@@ -764,12 +773,13 @@ resp = client.chat.completions.create(
               </div>
 
               <div class="overflow-x-auto -mx-1 px-1">
-                <table class="w-full min-w-[340px] text-left text-xs">
+                <table class="w-full min-w-[380px] text-left text-xs">
                   <thead class="text-slate-400 border-b border-slate-100 dark:border-slate-800/80">
                     <tr>
                       <th class="pb-2.5 font-medium">模型</th>
                       <th class="pb-2.5 font-medium text-right">调用</th>
-                      <th class="pb-2.5 font-medium text-right">总 Tokens</th>
+                      <th class="pb-2.5 font-medium text-right">消耗积分</th>
+                      <th class="pb-2.5 font-medium text-right">输出 Tokens</th>
                       <th class="pb-2.5 font-medium text-right w-24">占比</th>
                     </tr>
                   </thead>
@@ -791,12 +801,13 @@ resp = client.chat.completions.create(
               </div>
 
               <div class="overflow-x-auto -mx-1 px-1">
-                <table class="w-full min-w-[340px] text-left text-xs">
+                <table class="w-full min-w-[380px] text-left text-xs">
                   <thead class="text-slate-400 border-b border-slate-100 dark:border-slate-800/80">
                     <tr>
                       <th class="pb-2.5 font-medium">账号 UID</th>
                       <th class="pb-2.5 font-medium text-right">调用</th>
-                      <th class="pb-2.5 font-medium text-right">总 Tokens</th>
+                      <th class="pb-2.5 font-medium text-right">消耗积分</th>
+                      <th class="pb-2.5 font-medium text-right">输出 Tokens</th>
                       <th class="pb-2.5 font-medium text-right w-24">占比</th>
                     </tr>
                   </thead>
@@ -804,6 +815,57 @@ resp = client.chat.completions.create(
                     <!-- 动态插入 -->
                   </tbody>
                 </table>
+              </div>
+            </div>
+          </div>
+
+          <!-- 请求明细（秒级）：排查"哪一次调用慢/贵"的场景 -->
+          <div class="p-6 rounded-2xl bg-white dark:bg-dark-card border border-slate-200 dark:border-dark-border space-y-4">
+            <div class="flex flex-wrap items-center justify-between gap-3">
+              <div>
+                <h4 class="text-sm font-bold flex items-center gap-2">
+                  <i data-lucide="list" class="w-4 h-4 text-indigo-500"></i>
+                  请求明细
+                </h4>
+                <p class="text-[11px] text-slate-400 mt-0.5">逐条记录（精确到秒）。按时间倒序，最多显示最新 200 条。</p>
+              </div>
+              <div class="flex items-center gap-2">
+                <input id="usage-rec-model" type="text" placeholder="按模型筛选..."
+                       oninput="app.debouncedFetchUsageRecords()"
+                       class="w-36 sm:w-48 px-3 py-1.5 text-xs rounded-xl bg-slate-50 dark:bg-slate-900/60 border border-slate-200 dark:border-slate-800 focus:outline-none focus:border-indigo-500">
+                <button onclick="app.fetchUsageRecords()" class="px-3 py-1.5 rounded-xl bg-slate-100 dark:bg-slate-800 hover:bg-slate-200 dark:hover:bg-slate-700 text-xs font-medium transition-colors flex items-center gap-1.5">
+                  <i data-lucide="refresh-cw" class="w-3.5 h-3.5"></i>
+                  刷新
+                </button>
+              </div>
+            </div>
+
+            <div id="usage-rec-summary" class="text-[11px] text-slate-400"></div>
+
+            <div class="overflow-x-auto -mx-1 px-1">
+              <table class="w-full min-w-[520px] text-left text-xs">
+                <thead class="text-slate-400 border-b border-slate-100 dark:border-slate-800/80">
+                  <tr>
+                    <th class="pb-2.5 font-medium">时间</th>
+                    <th class="pb-2.5 font-medium">模型</th>
+                    <th class="pb-2.5 font-medium text-right">输出</th>
+                    <th class="pb-2.5 font-medium text-right">输入(含重发)</th>
+                    <th class="pb-2.5 font-medium text-right">积分</th>
+                    <th class="pb-2.5 font-medium text-right">耗时</th>
+                  </tr>
+                </thead>
+                <tbody id="usage-rec-tbody" class="divide-y divide-slate-100 dark:divide-slate-800/60 font-mono">
+                  <tr><td colspan="6" class="py-6 text-center text-slate-400 font-sans">加载中…</td></tr>
+                </tbody>
+              </table>
+            </div>
+
+            <!-- 分页 -->
+            <div class="flex items-center justify-between text-[11px] text-slate-400 pt-1">
+              <span id="usage-rec-page-info"></span>
+              <div class="flex items-center gap-2">
+                <button id="usage-rec-prev" onclick="app.usageRecPage(-1)" class="px-2.5 py-1 rounded-lg bg-slate-100 dark:bg-slate-800 hover:bg-slate-200 dark:hover:bg-slate-700 transition-colors disabled:opacity-40">上一页</button>
+                <button id="usage-rec-next" onclick="app.usageRecPage(1)" class="px-2.5 py-1 rounded-lg bg-slate-100 dark:bg-slate-800 hover:bg-slate-200 dark:hover:bg-slate-700 transition-colors disabled:opacity-40">下一页</button>
               </div>
             </div>
           </div>

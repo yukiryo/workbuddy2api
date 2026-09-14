@@ -18,6 +18,10 @@ class WorkBuddyApp {
     this.oauthState = null;            // 进行中的 OAuth 会话
     // 模型广场排序方式：default（官方顺序）/ credits（积分倍率升序）
     this.modelSort = localStorage.getItem('wb_model_sort') || 'default';
+    // 用量明细分页状态
+    this.usageRecLimit = 200;
+    this.usageRecOffset = 0;
+    this.usageRecTotal = 0;
     this.usageRange = '24h';
     this.isFetching = false;
     this.chatHistory = [];
@@ -1775,6 +1779,7 @@ class WorkBuddyApp {
   // ==========================================
   setUsageRange(range) {
     this.usageRange = range;
+    this.usageRecOffset = 0; // 换时间范围回到明细第一页
     document.querySelectorAll('.usage-range-btn').forEach(btn => {
       if (btn.getAttribute('data-range') === range) {
         btn.classList.add('active', 'bg-white', 'dark:bg-dark-card', 'shadow-sm', 'text-indigo-600', 'dark:text-indigo-400', 'font-semibold');
@@ -1812,53 +1817,156 @@ class WorkBuddyApp {
   renderUsageView(data) {
     if (!data) return;
     const summary = data.range_summary || {};
-    
-    // 1. 核心数字卡片
+
+    // 核心数字卡片
     const totalReq = summary.total_requests || 0;
     const totalTok = summary.total_tokens || 0;
     const promptTok = summary.prompt_tokens || 0;
     const compTok = summary.completion_tokens || 0;
+    const credit = Number(summary.total_credit || 0);
 
-    const elReq = document.getElementById('usage-total-requests');
-    if (elReq) elReq.textContent = totalReq.toLocaleString();
+    const setText = (id, v) => { const el = document.getElementById(id); if (el) el.textContent = v; };
 
-    const elTok = document.getElementById('usage-total-tokens');
-    const elTokRaw = document.getElementById('usage-total-tokens-raw');
-    if (elTok) {
-      elTok.textContent = this.formatNumberCompact(totalTok);
-      if (elTokRaw) elTokRaw.textContent = `(${totalTok.toLocaleString()})`;
-    }
+    setText('usage-total-requests', totalReq.toLocaleString());
+    setText('usage-total-credit', credit ? credit.toFixed(2) : '0');
+    setText('usage-completion-tokens', this.formatNumberCompact(compTok));
 
+    const elCompRaw = document.getElementById('usage-completion-tokens-raw');
+    if (elCompRaw) elCompRaw.textContent = compTok ? `(${compTok.toLocaleString()})` : '';
+
+    // prompt_tokens: 语义上含会话上下文重复计数，作为次要指标并显式标注
     const elPrompt = document.getElementById('usage-prompt-tokens');
     if (elPrompt) elPrompt.textContent = this.formatNumberCompact(promptTok);
+    const elPromptRaw = document.getElementById('usage-prompt-tokens-raw');
+    if (elPromptRaw) elPromptRaw.textContent = promptTok ? `(${promptTok.toLocaleString()})` : '';
+    setText('usage-prompt-note', summary.prompt_tokens_note || '');
 
-    const elComp = document.getElementById('usage-completion-tokens');
-    if (elComp) elComp.textContent = this.formatNumberCompact(compTok);
+    // 总 tokens（含重复计数）作为参考值
+    const elTok = document.getElementById('usage-total-tokens');
+    if (elTok) elTok.textContent = this.formatNumberCompact(totalTok);
 
-    // 消耗积分（后端 total_credit；此前拿到但未展示）
-    const elCredit = document.getElementById('usage-total-credit');
-    if (elCredit) {
-      const credit = Number(summary.total_credit || 0);
-      elCredit.textContent = credit ? credit.toFixed(2) : '0';
-    }
+    // 平均耗时
+    const avg = summary.avg_duration_ms || 0;
+    setText('usage-avg-duration', avg ? (avg / 1000).toFixed(2) + ' s' : '--');
 
-    // 数据更新时间（后端 last_updated）
+    // 平均每次消耗积分（成本视角的"单次成本"）
+    setText('usage-avg-credit', totalReq ? (credit / totalReq).toFixed(4) : '--');
+
     const elUpdated = document.getElementById('usage-last-updated');
     if (elUpdated) {
       const t = this.fmtTime(data.last_updated);
-      elUpdated.textContent = t ? `数据更新于 ${t}` : '';
+      const step = data.bucket_seconds ? this.formatBucketStep(data.bucket_seconds) : '';
+      elUpdated.textContent = [t ? `数据更新于 ${t}` : '', step ? `分桶粒度：${step}` : '']
+        .filter(Boolean).join(' · ');
     }
 
-    // 2. 趋势图表渲染
+    // 趋势图表：以积分为主指标
     this.renderUsageChart(data.time_series || []);
 
-    // 3. 模型排行渲染
+    // 模型排行（按积分排序，更有成本意义）
     this.renderModelBreakdown(data.model_breakdown || [], totalTok);
 
-    // 4. 账号排行渲染
+    // 账号排行
     this.renderAccountBreakdown(data.account_breakdown || [], totalTok);
 
+    // 请求明细（与聚合视图同步刷新）
+    this.fetchUsageRecords();
+
     if (window.lucide) lucide.createIcons();
+  }
+
+  // ===== 请求明细（秒级）=====
+
+  // debouncedFetchUsageRecords 输入框防抖，避免每敲一个字符就打一次后端
+  debouncedFetchUsageRecords() {
+    clearTimeout(this._usageRecTimer);
+    this._usageRecTimer = setTimeout(() => {
+      this.usageRecOffset = 0; // 筛选条件变化时回到第一页
+      this.fetchUsageRecords();
+    }, 350);
+  }
+
+  // usageRecPage 翻页（delta = -1 / +1）
+  usageRecPage(delta) {
+    const next = (this.usageRecOffset || 0) + delta * (this.usageRecLimit || 200);
+    if (next < 0) return;
+    if (this.usageRecTotal && next >= this.usageRecTotal) return;
+    this.usageRecOffset = next;
+    this.fetchUsageRecords();
+  }
+
+  async fetchUsageRecords() {
+    const tbody = document.getElementById('usage-rec-tbody');
+    if (!tbody) return;
+
+    const limit = this.usageRecLimit || 200;
+    const offset = this.usageRecOffset || 0;
+    const model = (document.getElementById('usage-rec-model')?.value || '').trim();
+    const range = this.usageRange || '24h';
+
+    const qs = new URLSearchParams({ range, limit: String(limit), offset: String(offset) });
+    if (model) qs.set('model', model);
+
+    try {
+      const res = await this.apiRequest('/api/usage/records?' + qs.toString());
+      const data = await res.json();
+      if (!res.ok || !data.success) throw new Error(data.message || `HTTP ${res.status}`);
+
+      const recs = data.records || [];
+      this.usageRecTotal = data.total || 0;
+
+      // 摘要
+      const sumEl = document.getElementById('usage-rec-summary');
+      if (sumEl) {
+        sumEl.textContent = `匹配 ${this.usageRecTotal} 条${model ? `（模型含「${model}」）` : ''}，当前显示第 ${offset + 1}–${offset + recs.length} 条`;
+      }
+
+      if (recs.length === 0) {
+        tbody.innerHTML = `<tr><td colspan="6" class="py-6 text-center text-slate-400 font-sans">该时间范围内没有记录</td></tr>`;
+      } else {
+        tbody.innerHTML = recs.map(r => `
+          <tr class="hover:bg-slate-50/50 dark:hover:bg-slate-800/40 transition-colors">
+            <td class="py-2 text-slate-500 dark:text-slate-400 whitespace-nowrap">${this.fmtFullTime(r.timestamp)}</td>
+            <td class="py-2 text-slate-700 dark:text-slate-200" title="${this.escapeHtml(r.model)}">${this.escapeHtml((r.model || '-').slice(0, 22))}</td>
+            <td class="py-2 text-right text-slate-700 dark:text-slate-300">${(r.completion_tokens || 0).toLocaleString()}</td>
+            <td class="py-2 text-right text-slate-400" title="客户端每轮重发全部历史，该值含重复计数">${(r.prompt_tokens || 0).toLocaleString()}</td>
+            <td class="py-2 text-right text-amber-600 dark:text-amber-400">${(r.credit || 0).toFixed(3)}</td>
+            <td class="py-2 text-right text-slate-500 dark:text-slate-400">${r.duration_ms ? (r.duration_ms / 1000).toFixed(1) + 's' : '--'}</td>
+          </tr>`).join('');
+      }
+
+      // 分页状态
+      const info = document.getElementById('usage-rec-page-info');
+      if (info) {
+        const from = this.usageRecTotal === 0 ? 0 : offset + 1;
+        const to = offset + recs.length;
+        info.textContent = `${from}–${to} / 共 ${this.usageRecTotal} 条`;
+      }
+      const prev = document.getElementById('usage-rec-prev');
+      const next = document.getElementById('usage-rec-next');
+      if (prev) prev.disabled = offset <= 0;
+      if (next) next.disabled = offset + limit >= this.usageRecTotal;
+    } catch (err) {
+      tbody.innerHTML = `<tr><td colspan="6" class="py-6 text-center text-rose-500 font-sans">加载失败：${this.escapeHtml(err.message)}</td></tr>`;
+    }
+  }
+
+  // fmtFullTime 秒级完整时间（明细表用）
+  fmtFullTime(ts) {
+    if (!ts) return '--';
+    const d = new Date(ts * 1000);
+    if (isNaN(d.getTime())) return '--';
+    const p = (n) => String(n).padStart(2, '0');
+    return `${p(d.getMonth() + 1)}-${p(d.getDate())} ${p(d.getHours())}:${p(d.getMinutes())}:${p(d.getSeconds())}`;
+  }
+
+  // formatBucketStep 把秒数步长转成人类可读（"5 分钟" / "1 小时" / "1 天"）
+  formatBucketStep(sec) {
+    if (!sec) return '';
+    if (sec < 60) return sec + ' 秒';
+    if (sec < 3600) return Math.round(sec / 60) + ' 分钟';
+    if (sec < 86400) return Math.round(sec / 3600) + ' 小时';
+    return Math.round(sec / 86400) + ' 天';
   }
 
   formatNumberCompact(num) {
@@ -1877,7 +1985,12 @@ class WorkBuddyApp {
       return;
     }
 
-    const maxTokens = Math.max(1, ...buckets.map(b => b.total_tokens));
+    // 主指标用「消耗积分」而非 total_tokens：
+    // prompt_tokens 含会话上下文重复计数（客户端每轮重发全部历史），
+    // 用它画图会把趋势严重放大且随会话长度漂移；credit 是真实扣费，最能反映成本走势。
+    const useCredit = buckets.some(b => (b.credit || 0) > 0);
+    const metricOf = (b) => useCredit ? (b.credit || 0) : (b.completion_tokens || 0);
+    const maxTokens = Math.max(1, ...buckets.map(metricOf));
     const count = buckets.length;
 
     // 构建 SVG 折线面积图
@@ -1892,7 +2005,7 @@ class WorkBuddyApp {
 
     const points = buckets.map((b, i) => {
       const x = padLeft + (plotW / (count - 1 || 1)) * i;
-      const y = padTop + plotH - (b.total_tokens / maxTokens) * plotH;
+      const y = padTop + plotH - (metricOf(b) / maxTokens) * plotH;
       return { x, y, bucket: b };
     });
 
@@ -1912,9 +2025,13 @@ class WorkBuddyApp {
       xLabelsHtml += `<text x="${p.x}" y="${height - 4}" text-anchor="middle" font-size="10" fill="currentColor" class="text-slate-400 font-mono">${p.bucket.label}</text>`;
     }
 
-    const circlesHtml = points.map(p => `
-      <circle cx="${p.x}" cy="${p.y}" r="3.5" class="chart-point fill-white dark:fill-dark-card stroke-indigo-500 hover:r-5 transition-all cursor-pointer" stroke-width="2" data-info="${p.bucket.label}: ${p.bucket.total_tokens.toLocaleString()} Tokens, ${p.bucket.call_count} 次调用" />
-    `).join('');
+    const circlesHtml = points.map(p => {
+      const c = p.bucket.credit || 0;
+      const tip = useCredit
+        ? `${p.bucket.label}: ${c.toFixed(3)} 积分, ${p.bucket.call_count} 次调用`
+        : `${p.bucket.label}: ${(p.bucket.completion_tokens || 0).toLocaleString()} 输出 Tokens, ${p.bucket.call_count} 次调用`;
+      return `<circle cx="${p.x}" cy="${p.y}" r="3.5" class="chart-point fill-white dark:fill-dark-card stroke-indigo-500 hover:r-5 transition-all cursor-pointer" stroke-width="2" data-info="${tip}" />`;
+    }).join('');
 
     container.innerHTML = `
       <svg viewBox="0 0 ${width} ${height}" class="w-full h-full overflow-visible">
@@ -1983,7 +2100,8 @@ class WorkBuddyApp {
             <span class="font-bold text-slate-700 dark:text-slate-200">${m.model}</span>
           </td>
           <td class="py-2.5 text-right text-slate-500 dark:text-slate-400">${m.call_count}</td>
-          <td class="py-2.5 text-right font-semibold text-slate-800 dark:text-slate-100">${m.total_tokens.toLocaleString()}</td>
+          <td class="py-2.5 text-right font-semibold text-amber-600 dark:text-amber-400">${(m.credit || 0).toFixed(3)}</td>
+          <td class="py-2.5 text-right text-slate-500 dark:text-slate-400">${this.formatNumberCompact(m.completion_tokens || 0)}</td>
           <td class="py-2.5 text-right">
             <div class="flex items-center justify-end gap-2">
               <span class="text-[11px] text-slate-400">${pct}%</span>
@@ -2018,7 +2136,8 @@ class WorkBuddyApp {
             <span class="font-bold text-slate-700 dark:text-slate-200" title="${a.uid}">${shortUID}</span>
           </td>
           <td class="py-2.5 text-right text-slate-500 dark:text-slate-400">${a.call_count}</td>
-          <td class="py-2.5 text-right font-semibold text-slate-800 dark:text-slate-100">${a.total_tokens.toLocaleString()}</td>
+          <td class="py-2.5 text-right font-semibold text-amber-600 dark:text-amber-400">${(a.credit || 0).toFixed(3)}</td>
+          <td class="py-2.5 text-right text-slate-500 dark:text-slate-400">${this.formatNumberCompact(a.completion_tokens || 0)}</td>
           <td class="py-2.5 text-right">
             <div class="flex items-center justify-end gap-2">
               <span class="text-[11px] text-slate-400">${pct}%</span>
