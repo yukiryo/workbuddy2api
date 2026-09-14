@@ -1,0 +1,42 @@
+feat(web): 补齐后端已返回但前端未展示的字段 + 移动端适配 + PWA
+
+## 补齐缺失字段（后端早已返回，前端此前完全没用）
+
+- realm 双域：账号卡片加 CN / GLOBAL 域标签；概览页新增双域统计卡
+  （realm_totals，仅在存在 global 账号时显示，避免单域用户受噪音干扰）
+- rate_limited_models：新增模型限流区块，显示被限流的模型与「还剩多久恢复」
+  （上游 6004 独立冷却能力，此前完全不可见）
+- 账号级 credits（池内积分）、disabled_reason（停用原因）、last_err（最近错误）
+- 概览页运行态指标：sticky_sessions（粘性会话数）、in_flight_full（满载账号数）
+- 用量页：total_credit（消耗积分卡片）、last_updated（数据更新时间）
+
+## 移动端适配（此前手机上显示不全）
+
+根因：侧边栏固定 w-64（256px），在 390px 屏上占 68%，主内容被挤扁；
+且 app.js 动态渲染部分零响应式类。
+
+- 侧边栏改为抽屉：窄屏 -translate-x-full 隐藏 + 遮罩层，lg 以上常驻
+- 顶部加汉堡菜单；抽屉打开时锁背景滚动，选完 tab 自动收起
+- 窗口拉宽到 lg 以上自动收起抽屉（避免留下半开的侧栏）
+- 内边距 px-8 -> px-4 sm:px-6 lg:px-8；标题栏按需隐藏描述文字
+- 「复制 API 地址」按钮窄屏只留图标
+- 模型搜索框 w-64 -> w-full sm:w-64
+- 用量表加横向滚动容器 + min-w-[340px]（390 屏可完整容纳，更窄才滚动）
+- style.css：长 URL / Token 断行防撑破；iOS 输入框字号提到 16px 防自动放大
+
+## PWA（可安装到手机主屏）
+
+- manifest.json：standalone 显示、主题色、3 个图标（含 maskable）、
+  3 个快捷方式（账号状态 / 凭证管理 / Token 用量）
+- sw.js：HTML 走 network-first（网关更新后刷新即得新版）；
+  静态资源 cache-first；**/api/* 与 /v1/* 绝不缓存**（带鉴权，
+  缓存会导致登录态错乱与跨会话数据泄漏）
+- 图标由 PIL 生成，indigo->violet 渐变 + 闪电，与前端品牌一致（共约 8KB）
+- index.html / login.html 加 manifest、theme-color、apple-touch-icon、
+  apple-mobile-web-app-* 等标签
+- 后端：manifest.json / sw.js / icons/ 加入登录门白名单与静态文件白名单。
+  浏览器安装 SW 与读取 manifest 时由浏览器自身发起请求、不带会话 Cookie，
+  若被登录门拦下会导致 PWA 静默安装失败（已补测试锁死）
+
+验证：CDP 无头 Chrome @390x844 实测——全部面板无横向溢出、侧边栏收起
+（left=-256）、展开正常（left=0）、汉堡可见、PWA 标签就位。

@@ -159,7 +159,12 @@ func NewHandler(cfg Config) *Handler {
 		fileServer := http.FileServer(http.Dir(webDir))
 		h.mux.HandleFunc("GET /", func(w http.ResponseWriter, r *http.Request) {
 			p := r.URL.Path
-			if p == "/" || p == "/index.html" || p == "/style.css" || p == "/app.js" || strings.HasPrefix(p, "/assets/") {
+			// PWA 资源（manifest / Service Worker / 图标）也必须能直接命中静态文件，
+			// 否则会被下面的 SPA 兜底逻辑返回 index.html，导致 manifest 解析失败、
+			// Service Worker 注册报 "unsupported MIME type"。
+			if p == "/" || p == "/index.html" || p == "/style.css" || p == "/app.js" ||
+				p == "/manifest.json" || p == "/sw.js" ||
+				strings.HasPrefix(p, "/assets/") || strings.HasPrefix(p, "/icons/") {
 				fileServer.ServeHTTP(w, r)
 				return
 			}

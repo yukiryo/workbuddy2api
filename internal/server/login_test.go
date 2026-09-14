@@ -50,6 +50,24 @@ func TestAuthGateOpenPaths(t *testing.T) {
 	}
 }
 
+// TestAuthGatePWAPathsOpen PWA 资源必须免登录。
+//
+// 浏览器在安装/更新 Service Worker、读取 manifest 时由**浏览器自身**发起请求，
+// 不会携带我们的会话 Cookie。若这些路径被登录门拦下，PWA 会静默安装失败，
+// 而用户在控制台里看不出任何异常——排障成本极高，故用测试锁死。
+func TestAuthGatePWAPathsOpen(t *testing.T) {
+	g := newTestGate("secret")
+	for _, p := range []string{
+		"/manifest.json", "/sw.js",
+		"/icons/icon-192.png", "/icons/icon-512.png",
+		"/icons/icon-512-maskable.png", "/icons/favicon-32.png",
+	} {
+		if !g.openPath(p) {
+			t.Errorf("%s 必须免登录（PWA 资源）", p)
+		}
+	}
+}
+
 // TestAuthGateVerify 密码校验：正确通过、错误拒绝、前缀/大小写不算匹配。
 func TestAuthGateVerify(t *testing.T) {
 	// 用明显的测试占位符，避免真实部署密码出现在公开仓库里。

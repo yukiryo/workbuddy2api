@@ -98,8 +98,36 @@ class WorkBuddyApp {
         const tab = item.getAttribute('data-tab');
         window.location.hash = tab;
         this.switchTab(tab);
+        this.closeSidebar(); // 移动端选完即收起抽屉
       });
     });
+
+    // 窄屏横竖屏切换 / 拉伸窗口时自动收起抽屉，避免留下半开的侧边栏
+    window.addEventListener('resize', () => {
+      if (window.innerWidth >= 1024) this.closeSidebar(true);
+    });
+  }
+
+  // ===== 移动端抽屉侧边栏 =====
+
+  openSidebar() {
+    const sb = document.getElementById('sidebar');
+    const bd = document.getElementById('sidebar-backdrop');
+    if (sb) sb.classList.remove('-translate-x-full');
+    if (bd) bd.classList.remove('hidden');
+    // 抽屉打开时锁住背景滚动，避免误滑
+    document.body.classList.add('overflow-hidden');
+  }
+
+  closeSidebar(force = false) {
+    const sb = document.getElementById('sidebar');
+    const bd = document.getElementById('sidebar-backdrop');
+    if (sb) sb.classList.add('-translate-x-full');
+    if (bd) bd.classList.add('hidden');
+    // 大屏下侧边栏是常驻的，不能锁滚动
+    if (force || window.innerWidth < 1024) {
+      document.body.classList.remove('overflow-hidden');
+    }
   }
 
   switchTab(tabName, updateHash = true) {
@@ -304,6 +332,40 @@ class WorkBuddyApp {
     }
   }
 
+  // realm 域统计（/status 的 realm_totals）：只在存在 global 账号时才占版面，
+  // 纯 CN 部署下不显示，避免给单域用户增加噪音。
+  renderRealmTotals(totals) {
+    const box = document.getElementById('realm-totals-box');
+    if (!box) return;
+    if (!totals || typeof totals !== 'object') { box.classList.add('hidden'); return; }
+
+    const cn = totals.cn || {};
+    const gl = totals.global || {};
+    const hasGlobal = (gl.total || 0) > 0;
+
+    if (!hasGlobal) { box.classList.add('hidden'); return; }
+
+    const cell = (label, t, color) => `
+      <div class="p-3 rounded-xl bg-slate-50 dark:bg-slate-900/50 border border-slate-100 dark:border-slate-800">
+        <div class="flex items-center justify-between mb-2">
+          <span class="px-1.5 py-0.5 rounded text-[9px] font-semibold ${color}">${label}</span>
+          <span class="text-[10px] text-slate-400 font-mono">${t.total || 0} 个</span>
+        </div>
+        <div class="grid grid-cols-3 gap-1 text-center">
+          <div><div class="text-[9px] text-slate-400">健康</div><div class="text-xs font-mono font-semibold text-emerald-500">${t.healthy || 0}</div></div>
+          <div><div class="text-[9px] text-slate-400">冷却</div><div class="text-xs font-mono font-semibold text-amber-500">${t.cooling || 0}</div></div>
+          <div><div class="text-[9px] text-slate-400">停用</div><div class="text-xs font-mono font-semibold text-rose-500">${t.disabled || 0}</div></div>
+        </div>
+      </div>`;
+
+    box.innerHTML = `
+      <div class="grid grid-cols-1 sm:grid-cols-2 gap-3">
+        ${cell('CN', cn, 'bg-sky-500/10 text-sky-500')}
+        ${cell('GLOBAL', gl, 'bg-violet-500/10 text-violet-500')}
+      </div>`;
+    box.classList.remove('hidden');
+  }
+
   renderStatus(data) {
     // 更新总览数据
     const total = data.total || 0;
@@ -316,6 +378,14 @@ class WorkBuddyApp {
     document.getElementById('stat-cooling-accounts').textContent = cooling;
     document.getElementById('stat-disabled-accounts').textContent = disabled;
     document.getElementById('nav-accounts-count').textContent = total;
+
+    // 双域统计（上游 realm 能力：cn / global 分池）
+    this.renderRealmTotals(data.realm_totals);
+
+    // 其余运行态指标（此前后端已返回但前端未展示）
+    const set = (id, v) => { const el = document.getElementById(id); if (el) el.textContent = v; };
+    set('stat-sticky-sessions', data.sticky_sessions ?? 0);
+    set('stat-inflight-full', data.in_flight_full ?? 0);
 
     // 渲染仪表盘账号小预览
     const previewContainer = document.getElementById('dash-accounts-preview');
@@ -436,7 +506,10 @@ class WorkBuddyApp {
     const borderClass = acc.disabled || acc.breaker_fails > 0 ? 'border-rose-500/30'
       : (acc.cooling ? 'border-amber-500/30' : 'border-emerald-500/30');
 
-    // ---- 配额区 ----
+    // ---- 头部：昵称 + realm 域标签 + 状态徽章 ----
+    const realmBadge = this.realmBadge(acc.realm);
+
+    // ---- 配额区：池内 credits 与深度查询 quota 双来源 ----
     let quotaHtml = '';
     if (deep.quota) {
       const q = deep.quota;
@@ -444,18 +517,18 @@ class WorkBuddyApp {
       const barColor = pct > 50 ? 'bg-emerald-500' : (pct > 20 ? 'bg-amber-500' : 'bg-rose-500');
       quotaHtml = `
         <div class="space-y-2">
-          <div class="flex items-center justify-between text-[11px]">
-            <span class="text-slate-400">配额余量</span>
-            <span class="font-mono font-semibold text-slate-700 dark:text-slate-200">
+          <div class="flex items-center justify-between text-[11px] gap-2">
+            <span class="text-slate-400 flex-shrink-0">配额余量</span>
+            <span class="font-mono font-semibold text-slate-700 dark:text-slate-200 truncate">
               ${q.remain} <span class="text-slate-400 font-normal">/ ${q.total}</span>
             </span>
           </div>
           <div class="h-1.5 rounded-full bg-slate-100 dark:bg-slate-800 overflow-hidden">
             <div class="h-full ${barColor} transition-all" style="width:${pct}%"></div>
           </div>
-          <div class="flex items-center justify-between text-[10px] text-slate-400">
-            <span>${this.escapeHtml(q.plan || '未知套餐')}</span>
-            <span>已用 ${q.used || 0}</span>
+          <div class="flex items-center justify-between text-[10px] text-slate-400 gap-2">
+            <span class="truncate" title="${this.escapeHtml(q.plan || '')}">${this.escapeHtml(q.plan || '未知套餐')}</span>
+            <span class="flex-shrink-0">已用 ${q.used || 0}</span>
           </div>
           ${q.cycle_end_time ? `<div class="text-[10px] text-slate-400">周期至 ${this.escapeHtml(q.cycle_end_time)}</div>` : ''}
         </div>`;
@@ -463,27 +536,39 @@ class WorkBuddyApp {
       quotaHtml = this.deepQueryHint('配额', deep.errors && deep.errors.quota);
     }
 
+    // 池内积分（后端 /status 的 credits，与上面的实时 quota 互为参照）
+    const creditsRow = (typeof acc.credits === 'number')
+      ? `<div class="flex items-center justify-between text-[10px] text-slate-400 pt-1">
+           <span>池内积分</span>
+           <span class="font-mono text-slate-500 dark:text-slate-400" title="网关内存中记录的积分，供选号权重使用">${acc.credits}</span>
+         </div>`
+      : '';
+
     // ---- 签到区 ----
     let checkinHtml = '';
     if (deep.checkin) {
       const c = deep.checkin;
       const done = c.checked_in;
       checkinHtml = `
-        <div class="flex items-center justify-between">
-          <div class="space-y-0.5">
+        <div class="flex items-center justify-between gap-3">
+          <div class="space-y-0.5 min-w-0">
             <div class="text-[11px] text-slate-400">每日签到</div>
             <div class="text-xs font-medium ${done ? 'text-emerald-500' : 'text-amber-500'}">
               ${done ? '今日已签到' : '今日未签到'} · 连登 ${c.streak_days || 0} 天
             </div>
+            ${c.total_credits ? `<div class="text-[10px] text-slate-400">活动累计 +${c.total_credits}</div>` : ''}
           </div>
           ${done ? '' : `
-            <button onclick="app.doCheckin('${this.escapeHtml(acc.uid)}')" class="px-2.5 py-1 rounded-lg bg-amber-500 hover:bg-amber-400 text-white text-[10px] font-semibold transition-colors">
+            <button onclick="app.doCheckin('${this.escapeHtml(acc.uid)}')" class="px-2.5 py-1 rounded-lg bg-amber-500 hover:bg-amber-400 text-white text-[10px] font-semibold transition-colors flex-shrink-0">
               去签到 +${c.daily_credit || 0}
             </button>`}
         </div>`;
     } else {
       checkinHtml = this.deepQueryHint('签到', deep.errors && deep.errors.checkin);
     }
+
+    // ---- 模型级限流（上游 6004 独立冷却）----
+    const rlHtml = this.rateLimitedModelsHtml(acc);
 
     // ---- 模型区 ----
     let modelsHtml = '';
@@ -504,27 +589,49 @@ class WorkBuddyApp {
       modelsHtml = this.deepQueryHint('模型', deep.errors && deep.errors.models);
     }
 
+    // ---- 异常信息：停用原因 / 最后一次错误 ----
+    let alertHtml = '';
+    if (acc.disabled && acc.disabled_reason) {
+      alertHtml = `<div class="p-2 rounded-lg bg-rose-500/10 border border-rose-500/20 text-[10px] text-rose-600 dark:text-rose-400 break-words">
+        <span class="font-semibold">停用原因：</span>${this.escapeHtml(acc.disabled_reason)}</div>`;
+    }
+    const lastErr = this.fmtTime(acc.last_err);
+    if (lastErr) {
+      alertHtml += `<div class="p-2 rounded-lg bg-amber-500/10 border border-amber-500/20 text-[10px] text-amber-600 dark:text-amber-400 break-words">
+        <span class="font-semibold">最近错误：</span>${this.escapeHtml(lastErr)}</div>`;
+    }
+
     return `
-      <div class="p-5 rounded-2xl bg-white dark:bg-dark-card border ${borderClass} shadow-sm space-y-4">
+      <div class="p-4 sm:p-5 rounded-2xl bg-white dark:bg-dark-card border ${borderClass} shadow-sm space-y-4">
         <!-- 头部 -->
-        <div class="flex items-center justify-between">
+        <div class="flex items-start justify-between gap-2">
           <div class="flex items-center gap-2.5 min-w-0">
             <div class="w-9 h-9 rounded-xl bg-indigo-50 dark:bg-indigo-950/60 text-indigo-600 dark:text-indigo-400 font-bold flex items-center justify-center text-sm flex-shrink-0">
               ${this.escapeHtml((acc.nickname || 'CB').slice(0, 2).toUpperCase())}
             </div>
             <div class="min-w-0">
               <h4 class="text-xs font-bold text-slate-800 dark:text-slate-100 truncate">${this.escapeHtml(acc.nickname || 'CodeBuddy 账号')}</h4>
-              <div class="text-[10px] font-mono text-slate-400 truncate" title="${this.escapeHtml(acc.uid)}">${this.escapeHtml((acc.uid || '--').slice(0, 22))}</div>
+              <div class="flex items-center gap-1.5 mt-0.5">
+                ${realmBadge}
+                <span class="text-[10px] font-mono text-slate-400 truncate" title="${this.escapeHtml(acc.uid)}">${this.escapeHtml((acc.uid || '--').slice(0, 18))}</span>
+              </div>
             </div>
           </div>
           <div class="flex-shrink-0">${this.accountStateBadge(acc)}</div>
         </div>
 
+        ${alertHtml}
+
         <!-- 配额 -->
-        <div class="pb-3 border-b border-slate-100 dark:border-slate-800/80">${quotaHtml}</div>
+        <div class="pb-3 border-b border-slate-100 dark:border-slate-800/80">
+          ${quotaHtml}${creditsRow}
+        </div>
 
         <!-- 签到 -->
         <div class="pb-3 border-b border-slate-100 dark:border-slate-800/80">${checkinHtml}</div>
+
+        <!-- 模型级限流 -->
+        ${rlHtml}
 
         <!-- 模型 -->
         ${modelsHtml}
@@ -544,8 +651,63 @@ class WorkBuddyApp {
             <div class="text-xs font-mono font-semibold text-slate-700 dark:text-slate-200">${acc.soft_streak || 0}</div>
           </div>
         </div>
+
+        ${acc.last_success && !String(acc.last_success).startsWith('0001') ? `
+        <div class="text-[10px] text-slate-400 text-center">最近成功 ${this.escapeHtml(this.fmtTime(acc.last_success) || '')}</div>` : ''}
       </div>
     `;
+  }
+
+  // realm 域标签：cn / global（后端 realm 字段，空则视为 cn）
+  realmBadge(realm) {
+    const r = (realm || 'cn').toLowerCase();
+    if (r === 'global') {
+      return `<span class="px-1.5 py-0.5 rounded text-[9px] font-semibold bg-violet-500/10 text-violet-500 flex-shrink-0" title="global 域（workbuddy.ai）">GLOBAL</span>`;
+    }
+    return `<span class="px-1.5 py-0.5 rounded text-[9px] font-semibold bg-sky-500/10 text-sky-500 flex-shrink-0" title="cn 域（CodeBuddy 国内）">CN</span>`;
+  }
+
+  // 模型级限流展示（上游 6004 独立冷却：每账号每模型独立计时）
+  rateLimitedModelsHtml(acc) {
+    const list = acc.rate_limited_models;
+    if (!Array.isArray(list) || list.length === 0) return '';
+    const items = list.map(m => {
+      const name = typeof m === 'string' ? m : (m.model || '');
+      const reset = typeof m === 'object' ? this.fmtResetAt(m) : '';
+      return `<span class="inline-flex items-center gap-1 px-1.5 py-0.5 rounded text-[10px] font-mono bg-amber-500/10 text-amber-600 dark:text-amber-400"
+                    title="${this.escapeHtml(name)}${reset ? ' · ' + this.escapeHtml(reset) : ''}">
+        ${this.escapeHtml(name)}${reset ? ` <span class="opacity-70">${this.escapeHtml(reset)}</span>` : ''}
+      </span>`;
+    }).join('');
+    return `
+      <div class="p-2.5 rounded-xl bg-amber-500/5 border border-amber-500/20 space-y-1.5">
+        <div class="flex items-center justify-between text-[11px] gap-2">
+          <span class="text-amber-600 dark:text-amber-400 font-medium flex items-center gap-1">
+            <i data-lucide="gauge-circle" class="w-3 h-3"></i>模型限流中
+          </span>
+          <span class="font-mono text-amber-500">${list.length} 个</span>
+        </div>
+        <div class="flex flex-wrap gap-1">${items}</div>
+      </div>`;
+  }
+
+  // 把限流模型的 reset_at 格式化为「还剩 X 分钟」
+  fmtResetAt(m) {
+    const raw = m.reset_at || m.resetAt || m.until;
+    if (!raw || String(raw).startsWith('0001')) return '';
+    const t = new Date(raw).getTime();
+    if (isNaN(t)) return '';
+    const left = Math.round((t - Date.now()) / 1000);
+    if (left <= 0) return '已恢复';
+    return this.formatDuration(left);
+  }
+
+  // 安全格式化时间戳：无效/零值返回空串（后端零值时间是 0001-01-01）
+  fmtTime(v) {
+    if (!v || String(v).startsWith('0001')) return '';
+    const t = new Date(v);
+    if (isNaN(t.getTime())) return '';
+    return t.toLocaleString('zh-CN', { month: '2-digit', day: '2-digit', hour: '2-digit', minute: '2-digit' });
   }
 
   // 深度查询失败/未查询时的占位提示
@@ -1397,6 +1559,20 @@ class WorkBuddyApp {
 
     const elComp = document.getElementById('usage-completion-tokens');
     if (elComp) elComp.textContent = this.formatNumberCompact(compTok);
+
+    // 消耗积分（后端 total_credit；此前拿到但未展示）
+    const elCredit = document.getElementById('usage-total-credit');
+    if (elCredit) {
+      const credit = Number(summary.total_credit || 0);
+      elCredit.textContent = credit ? credit.toFixed(2) : '0';
+    }
+
+    // 数据更新时间（后端 last_updated）
+    const elUpdated = document.getElementById('usage-last-updated');
+    if (elUpdated) {
+      const t = this.fmtTime(data.last_updated);
+      elUpdated.textContent = t ? `数据更新于 ${t}` : '';
+    }
 
     // 2. 趋势图表渲染
     this.renderUsageChart(data.time_series || []);

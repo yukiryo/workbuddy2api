@@ -1,5 +1,46 @@
 /* WorkBuddy WebUI 核心美化样式表 */
 
+/* ========================================================= */
+/* 移动端与长内容防溢出 */
+/* ========================================================= */
+
+/* 长 URL / 长 Token / 长 UID 在窄屏必须能断行，否则撑破卡片 */
+.guide-url,
+.guide-v1-url,
+.guide-key,
+.font-mono {
+  word-break: break-all;
+  overflow-wrap: anywhere;
+}
+
+/* 代码块横向滚动而非撑破容器 */
+pre {
+  max-width: 100%;
+  overflow-x: auto;
+}
+
+/* iOS 输入框字号 <16px 会触发自动放大，移动端统一提到 16px 防缩放抖动 */
+@media (max-width: 640px) {
+  input[type="text"],
+  input[type="password"],
+  input[type="url"],
+  input[type="search"],
+  textarea,
+  select {
+    font-size: 16px !important;
+  }
+}
+
+/* 移动端侧边栏抽屉：隐藏横向滚动条（避免抽屉动画时出现滚动条闪烁） */
+body.overflow-hidden {
+  overflow: hidden;
+}
+
+/* 表格在窄屏可横向滑动（保留表头可读性） */
+.overflow-x-auto {
+  -webkit-overflow-scrolling: touch;
+}
+
 /* 优雅滚动条 */
 ::-webkit-scrollbar {
   width: 6px;

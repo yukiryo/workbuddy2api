@@ -73,12 +73,19 @@ func (g *authGate) openPath(p string) bool {
 		p == "/login.html",
 		p == "/style.css",
 		p == "/favicon.ico",
+		// PWA 资源必须免登录：浏览器在安装/更新 Service Worker 与
+		// 读取 manifest 时不会携带我们的会话 Cookie（请求由浏览器自身发起），
+		// 若被登录门拦下，PWA 会静默安装失败。
+		// 这些文件不含任何业务数据（图标 / 缓存策略 / 应用元信息）。
+		p == "/manifest.json",
+		p == "/sw.js",
 		p == "/api/login",
 		// 供前端查询登录态 / 退出，本身不泄露任何业务数据。
 		p == "/api/session",
 		p == "/api/logout",
-		// 登录页需要加载的前端依赖。
+		// 登录页与 PWA 需要加载的前端依赖。
 		strings.HasPrefix(p, "/assets/"),
+		strings.HasPrefix(p, "/icons/"),
 		// OpenAI 兼容接口走独立的 Bearer api_key 鉴权。
 		strings.HasPrefix(p, "/v1/"):
 		return true

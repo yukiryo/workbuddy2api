@@ -1,7 +1,7 @@
 <!DOCTYPE html>
 <html lang="zh-CN" class="dark">
 <head>
-  <!-- 首屏主题感知，防止刷新闪烁 -->
+  <!-- 棣栧睆涓婚鎰熺煡锛岄槻姝㈠埛鏂伴棯鐑?-->
   <script>
     (function() {
       var saved = localStorage.getItem('wb_theme');
@@ -14,9 +14,18 @@
   </script>
 
   <meta charset="UTF-8">
-  <meta name="viewport" content="width=device-width, initial-scale=1.0">
-  <title>WorkBuddy 控制台 - API 监控与管理面板</title>
-  <link rel="icon" href="data:image/svg+xml,<svg xmlns=%22http://www.w3.org/2000/svg%22 viewBox=%220 0 100 100%22><text y=%22.9em%22 font-size=%2290%22>⚡</text></svg>">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover">
+  <title>WorkBuddy 鎺у埗鍙?- API 鐩戞帶涓庣鐞嗛潰鏉?/title>
+  <link rel="icon" href="data:image/svg+xml,<svg xmlns=%22http://www.w3.org/2000/svg%22 viewBox=%220 0 100 100%22><text y=%22.9em%22 font-size=%2290%22>鈿?/text></svg>">
+
+  <!-- PWA锛氬彲瀹夎鍒版墜鏈轰富灞忥紝鐙珛绐楀彛杩愯 -->
+  <link rel="manifest" href="/manifest.json">
+  <meta name="theme-color" content="#4f46e5">
+  <link rel="apple-touch-icon" href="/icons/icon-192.png">
+  <meta name="apple-mobile-web-app-capable" content="yes">
+  <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
+  <meta name="apple-mobile-web-app-title" content="WorkBuddy">
+  <meta name="mobile-web-app-capable" content="yes">
   
   <!-- Tailwind CSS CDN -->
   <script src="/assets/tailwindcss.js"></script>
@@ -55,18 +64,24 @@
 </head>
 <body class="bg-slate-50 text-slate-800 dark:bg-dark-bg dark:text-slate-100 min-h-screen flex flex-col font-sans transition-colors duration-200">
 
-  <!-- 顶部提示横条（出现连接断开时显示） -->
+  <!-- 椤堕儴鎻愮ず妯潯锛堝嚭鐜拌繛鎺ユ柇寮€鏃舵樉绀猴級 -->
   <div id="conn-banner" class="hidden bg-amber-500/10 border-b border-amber-500/20 text-amber-600 dark:text-amber-400 px-4 py-2 text-xs font-medium flex items-center justify-between">
     <div class="flex items-center gap-2">
       <i data-lucide="alert-triangle" class="w-4 h-4"></i>
-      <span id="conn-banner-text">正在尝试连接网关...</span>
+      <span id="conn-banner-text">姝ｅ湪灏濊瘯杩炴帴缃戝叧...</span>
     </div>
-    <button onclick="app.refreshAll()" class="underline hover:text-amber-300">重试连接</button>
+    <button onclick="app.refreshAll()" class="underline hover:text-amber-300">閲嶈瘯杩炴帴</button>
   </div>
 
   <div class="flex flex-1 h-screen overflow-hidden">
-    <!-- 侧边栏导航 -->
-    <aside class="w-64 bg-white dark:bg-dark-card border-r border-slate-200 dark:border-dark-border flex flex-col z-20 flex-shrink-0">
+    <!-- 绉诲姩绔伄缃╁眰锛氭娊灞夊睍寮€鏃剁偣鍑诲叧闂?-->
+    <div id="sidebar-backdrop" onclick="app.closeSidebar()"
+         class="hidden fixed inset-0 z-30 bg-slate-900/50 backdrop-blur-sm lg:hidden"></div>
+
+    <!-- 渚ц竟鏍忓鑸細绉诲姩绔负鎶藉眽锛?translate-x-full 闅愯棌锛夛紝lg 浠ヤ笂甯搁┗ -->
+    <aside id="sidebar"
+           class="fixed lg:static inset-y-0 left-0 w-64 bg-white dark:bg-dark-card border-r border-slate-200 dark:border-dark-border flex flex-col z-40 flex-shrink-0
+                  transform -translate-x-full lg:translate-x-0 transition-transform duration-200 ease-out">
       <!-- Brand Logo -->
       <div class="h-16 px-6 flex items-center justify-between border-b border-slate-200 dark:border-dark-border">
         <div class="flex items-center gap-3">
@@ -78,62 +93,66 @@
             <span class="text-[10px] text-slate-400 font-mono tracking-wider uppercase">Console</span>
           </div>
         </div>
-        <span class="px-2 py-0.5 text-[10px] font-semibold tracking-wide rounded-full bg-indigo-50 dark:bg-indigo-950/60 text-indigo-600 dark:text-indigo-400 border border-indigo-200 dark:border-indigo-800/50">v1.0</span>
+        <!-- 绉诲姩绔叧闂寜閽?-->
+        <button onclick="app.closeSidebar()" class="lg:hidden p-1.5 rounded-lg text-slate-400 hover:text-slate-600 dark:hover:text-slate-200 transition-colors" title="鏀惰捣鑿滃崟">
+          <i data-lucide="x" class="w-5 h-5"></i>
+        </button>
+        <span class="hidden lg:inline px-2 py-0.5 text-[10px] font-semibold tracking-wide rounded-full bg-indigo-50 dark:bg-indigo-950/60 text-indigo-600 dark:text-indigo-400 border border-indigo-200 dark:border-indigo-800/50">v1.0</span>
       </div>
 
-      <!-- 导航项 -->
+      <!-- 瀵艰埅椤?-->
       <nav class="flex-1 px-3 py-4 space-y-1 overflow-y-auto">
         <a href="#dashboard" class="nav-item active flex items-center gap-3 px-3 py-2.5 rounded-xl text-sm font-medium transition-all" data-tab="dashboard">
           <i data-lucide="layout-dashboard" class="w-4 h-4"></i>
-          <span>概览仪表盘</span>
+          <span>姒傝浠〃鐩?/span>
         </a>
         <a href="#accounts" class="nav-item flex items-center gap-3 px-3 py-2.5 rounded-xl text-sm font-medium transition-all" data-tab="accounts">
           <i data-lucide="users" class="w-4 h-4"></i>
-          <span>账号大厅</span>
+          <span>璐﹀彿澶у巺</span>
           <span id="nav-accounts-count" class="ml-auto text-xs px-2 py-0.5 rounded-full bg-slate-100 dark:bg-slate-800 text-slate-500 font-mono">0</span>
         </a>
         <a href="#credentials" class="nav-item flex items-center gap-3 px-3 py-2.5 rounded-xl text-sm font-medium transition-all" data-tab="credentials">
           <i data-lucide="key-round" class="w-4 h-4"></i>
-          <span>凭证管理</span>
+          <span>鍑瘉绠＄悊</span>
           <span id="nav-credentials-count" class="ml-auto text-xs px-2 py-0.5 rounded-full bg-slate-100 dark:bg-slate-800 text-slate-500 font-mono">0</span>
         </a>
         <a href="#models" class="nav-item flex items-center gap-3 px-3 py-2.5 rounded-xl text-sm font-medium transition-all" data-tab="models">
           <i data-lucide="box" class="w-4 h-4"></i>
-          <span>模型广场</span>
+          <span>妯″瀷骞垮満</span>
           <span id="nav-models-count" class="ml-auto text-xs px-2 py-0.5 rounded-full bg-slate-100 dark:bg-slate-800 text-slate-500 font-mono">0</span>
         </a>
         <a href="#playground" class="nav-item flex items-center gap-3 px-3 py-2.5 rounded-xl text-sm font-medium transition-all" data-tab="playground">
           <i data-lucide="message-square-code" class="w-4 h-4"></i>
-          <span>API 测试沙盒</span>
+          <span>API 娴嬭瘯娌欑洅</span>
           <span class="ml-auto text-[10px] px-1.5 py-0.5 rounded bg-emerald-500/10 text-emerald-500 font-semibold uppercase">Live</span>
         </a>
         <a href="#usage" class="nav-item flex items-center gap-3 px-3 py-2.5 rounded-xl text-sm font-medium transition-all" data-tab="usage">
           <i data-lucide="bar-chart-2" class="w-4 h-4"></i>
-          <span>用量统计</span>
+          <span>鐢ㄩ噺缁熻</span>
           <span class="ml-auto text-[10px] px-1.5 py-0.5 rounded bg-indigo-500/10 text-indigo-500 font-semibold">Tokens</span>
         </a>
         <a href="#guides" class="nav-item flex items-center gap-3 px-3 py-2.5 rounded-xl text-sm font-medium transition-all" data-tab="guides">
           <i data-lucide="book-open" class="w-4 h-4"></i>
-          <span>客户端接入</span>
+          <span>瀹㈡埛绔帴鍏?/span>
         </a>
         
         <div class="pt-4 pb-1">
-          <div class="px-3 text-[11px] font-semibold tracking-wider text-slate-400 uppercase">管理配置</div>
+          <div class="px-3 text-[11px] font-semibold tracking-wider text-slate-400 uppercase">绠＄悊閰嶇疆</div>
         </div>
 
         <a href="#settings" class="nav-item flex items-center gap-3 px-3 py-2.5 rounded-xl text-sm font-medium transition-all" data-tab="settings">
           <i data-lucide="settings" class="w-4 h-4"></i>
-          <span>连接设置</span>
+          <span>杩炴帴璁剧疆</span>
         </a>
       </nav>
 
-      <!-- 底部系统网关状态面板 -->
+      <!-- 搴曢儴绯荤粺缃戝叧鐘舵€侀潰鏉?-->
       <div class="p-3 border-t border-slate-200 dark:border-dark-border">
         <div class="p-3 rounded-xl bg-slate-100/70 dark:bg-slate-900/60 border border-slate-200/80 dark:border-slate-800/80 space-y-2">
           <div class="flex items-center justify-between">
             <span class="text-xs text-slate-500 dark:text-slate-400 flex items-center gap-1.5">
               <span id="gateway-status-dot" class="w-2 h-2 rounded-full bg-slate-400"></span>
-              <span id="gateway-status-text">检测中...</span>
+              <span id="gateway-status-text">妫€娴嬩腑...</span>
             </span>
             <span id="gateway-ping" class="text-[10px] font-mono text-slate-400">-- ms</span>
           </div>
@@ -144,154 +163,166 @@
       </div>
     </aside>
 
-    <!-- 主工作区 -->
+    <!-- 涓诲伐浣滃尯 -->
     <main class="flex-1 flex flex-col overflow-hidden">
-      <!-- 顶部功能栏 -->
-      <header class="h-16 px-8 bg-white/80 dark:bg-dark-card/80 backdrop-blur-md border-b border-slate-200 dark:border-dark-border flex items-center justify-between z-10">
-        <div class="flex items-center gap-3">
-          <h2 id="page-title" class="text-lg font-bold">概览仪表盘</h2>
-          <span id="page-desc" class="hidden md:inline text-xs text-slate-400">实时监控网关健康状态与账号调度池</span>
+      <!-- 椤堕儴鍔熻兘鏍?-->
+      <header class="h-16 px-4 sm:px-6 lg:px-8 bg-white/80 dark:bg-dark-card/80 backdrop-blur-md border-b border-slate-200 dark:border-dark-border flex items-center justify-between z-10 gap-2">
+        <div class="flex items-center gap-2 sm:gap-3 min-w-0">
+          <!-- 绉诲姩绔眽鍫¤彍鍗?-->
+          <button onclick="app.openSidebar()" class="lg:hidden p-2 -ml-1 rounded-xl text-slate-500 hover:text-slate-700 dark:text-slate-400 dark:hover:text-white hover:bg-slate-100 dark:hover:bg-dark-hover transition-colors flex-shrink-0" title="鎵撳紑鑿滃崟">
+            <i data-lucide="menu" class="w-5 h-5"></i>
+          </button>
+          <h2 id="page-title" class="text-base sm:text-lg font-bold truncate">姒傝浠〃鐩?/h2>
+          <span id="page-desc" class="hidden xl:inline text-xs text-slate-400 truncate">瀹炴椂鐩戞帶缃戝叧鍋ュ悍鐘舵€佷笌璐﹀彿璋冨害姹?/span>
         </div>
 
-        <!-- 顶部操作区 -->
-        <div class="flex items-center gap-3">
-          <!-- 刷新按钮 -->
-          <button id="btn-refresh" onclick="app.refreshAll()" class="p-2 rounded-xl text-slate-500 hover:text-slate-700 dark:text-slate-400 dark:hover:text-white hover:bg-slate-100 dark:hover:bg-dark-hover transition-colors" title="刷新数据">
+        <!-- 椤堕儴鎿嶄綔鍖?-->
+        <div class="flex items-center gap-1 sm:gap-2 flex-shrink-0">
+          <!-- 鍒锋柊鎸夐挳 -->
+          <button id="btn-refresh" onclick="app.refreshAll()" class="p-2 rounded-xl text-slate-500 hover:text-slate-700 dark:text-slate-400 dark:hover:text-white hover:bg-slate-100 dark:hover:bg-dark-hover transition-colors" title="鍒锋柊鏁版嵁">
             <i data-lucide="rotate-cw" class="w-4 h-4" id="refresh-icon"></i>
           </button>
 
-          <!-- API 端点快速复制按钮 -->
-          <button onclick="app.copyEndpoint()" class="flex items-center gap-2 px-3 py-1.5 text-xs font-medium rounded-xl bg-slate-100 dark:bg-slate-800 hover:bg-slate-200 dark:hover:bg-slate-700 transition-colors">
-            <i data-lucide="link" class="w-3.5 h-3.5 text-indigo-500"></i>
-            <span>复制 API 地址</span>
+          <!-- API 绔偣蹇€熷鍒舵寜閽紙绉诲姩绔殣钘忔枃瀛楋紝鍙暀鍥炬爣锛?-->
+          <button onclick="app.copyEndpoint()" class="flex items-center gap-2 p-2 sm:px-3 sm:py-1.5 text-xs font-medium rounded-xl bg-slate-100 dark:bg-slate-800 hover:bg-slate-200 dark:hover:bg-slate-700 transition-colors" title="澶嶅埗 API 鍦板潃">
+            <i data-lucide="link" class="w-4 h-4 sm:w-3.5 sm:h-3.5 text-indigo-500"></i>
+            <span class="hidden sm:inline">澶嶅埗 API 鍦板潃</span>
           </button>
 
-          <!-- 主题切换 -->
-          <button onclick="app.toggleTheme()" class="p-2 rounded-xl text-slate-500 hover:text-slate-700 dark:text-slate-400 dark:hover:text-white hover:bg-slate-100 dark:hover:bg-dark-hover transition-colors">
+          <!-- 涓婚鍒囨崲 -->
+          <button onclick="app.toggleTheme()" class="p-2 rounded-xl text-slate-500 hover:text-slate-700 dark:text-slate-400 dark:hover:text-white hover:bg-slate-100 dark:hover:bg-dark-hover transition-colors" title="鍒囨崲涓婚">
             <i data-lucide="sun" class="w-4 h-4 hidden dark:block"></i>
             <i data-lucide="moon" class="w-4 h-4 block dark:hidden"></i>
           </button>
 
-          <!-- 退出登录 -->
-          <button id="btn-logout" onclick="app.logout()" class="hidden p-2 rounded-xl text-slate-500 hover:text-red-600 dark:text-slate-400 dark:hover:text-red-400 hover:bg-slate-100 dark:hover:bg-dark-hover transition-colors" title="退出登录">
+          <!-- 閫€鍑虹櫥褰?-->
+          <button id="btn-logout" onclick="app.logout()" class="hidden p-2 rounded-xl text-slate-500 hover:text-red-600 dark:text-slate-400 dark:hover:text-red-400 hover:bg-slate-100 dark:hover:bg-dark-hover transition-colors" title="閫€鍑虹櫥褰?>
             <i data-lucide="log-out" class="w-4 h-4"></i>
           </button>
         </div>
       </header>
 
-      <!-- 页面内容容器 -->
-      <div class="flex-1 overflow-y-auto p-8 space-y-8" id="content-container">
+      <!-- 椤甸潰鍐呭瀹瑰櫒 -->
+      <div class="flex-1 overflow-y-auto p-4 sm:p-6 lg:p-8 space-y-6 lg:space-y-8" id="content-container">
 
-        <!-- 1. 仪表盘概览 TAB -->
+        <!-- 1. 浠〃鐩樻瑙?TAB -->
         <section id="tab-dashboard" class="tab-pane space-y-6">
-          <!-- 4 宫格核心指标卡 -->
+          <!-- 4 瀹牸鏍稿績鎸囨爣鍗?-->
           <div class="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-5">
-            <!-- 指标卡 1：总账号数 -->
+            <!-- 鎸囨爣鍗?1锛氭€昏处鍙锋暟 -->
             <div class="p-5 rounded-2xl bg-white dark:bg-dark-card border border-slate-200 dark:border-dark-border shadow-sm">
               <div class="flex items-center justify-between text-slate-400 mb-2">
-                <span class="text-xs font-medium">绑定账号数</span>
+                <span class="text-xs font-medium">缁戝畾璐﹀彿鏁?/span>
                 <i data-lucide="users" class="w-4 h-4 text-indigo-500"></i>
               </div>
               <div class="flex items-baseline gap-2">
                 <span id="stat-total-accounts" class="text-3xl font-bold font-mono tracking-tight">0</span>
-                <span class="text-xs text-slate-400">个 CodeBuddy 凭证</span>
+                <span class="text-xs text-slate-400">涓?CodeBuddy 鍑瘉</span>
               </div>
               <div class="mt-3 pt-3 border-t border-slate-100 dark:border-slate-800 text-[11px] text-slate-400 flex items-center gap-1.5">
                 <i data-lucide="shield-check" class="w-3.5 h-3.5 text-emerald-500"></i>
-                <span>自动 Token 刷新中</span>
+                <span>鑷姩 Token 鍒锋柊涓?/span>
               </div>
             </div>
 
-            <!-- 指标卡 2：健康活跃账号 -->
+            <!-- 鎸囨爣鍗?2锛氬仴搴锋椿璺冭处鍙?-->
             <div class="p-5 rounded-2xl bg-white dark:bg-dark-card border border-slate-200 dark:border-dark-border shadow-sm">
               <div class="flex items-center justify-between text-slate-400 mb-2">
-                <span class="text-xs font-medium">健康就绪账号</span>
+                <span class="text-xs font-medium">鍋ュ悍灏辩华璐﹀彿</span>
                 <i data-lucide="activity" class="w-4 h-4 text-emerald-500"></i>
               </div>
               <div class="flex items-baseline gap-2">
                 <span id="stat-healthy-accounts" class="text-3xl font-bold font-mono tracking-tight text-emerald-600 dark:text-emerald-400">0</span>
-                <span class="text-xs text-slate-400">个随时可调度</span>
+                <span class="text-xs text-slate-400">涓殢鏃跺彲璋冨害</span>
               </div>
               <div class="mt-3 pt-3 border-t border-slate-100 dark:border-slate-800 text-[11px] text-slate-400 flex items-center justify-between">
-                <span>熔断/冷却中: <strong id="stat-cooling-accounts" class="text-amber-500 font-mono">0</strong></span>
-                <span>禁用: <strong id="stat-disabled-accounts" class="text-rose-500 font-mono">0</strong></span>
+                <span>鐔旀柇/鍐峰嵈涓? <strong id="stat-cooling-accounts" class="text-amber-500 font-mono">0</strong></span>
+                <span>绂佺敤: <strong id="stat-disabled-accounts" class="text-rose-500 font-mono">0</strong></span>
               </div>
             </div>
 
-            <!-- 指标卡 3：可用模型数 -->
+            <!-- 鎸囨爣鍗?3锛氬彲鐢ㄦā鍨嬫暟 -->
             <div class="p-5 rounded-2xl bg-white dark:bg-dark-card border border-slate-200 dark:border-dark-border shadow-sm">
               <div class="flex items-center justify-between text-slate-400 mb-2">
-                <span class="text-xs font-medium">兼容模型支持</span>
+                <span class="text-xs font-medium">鍏煎妯″瀷鏀寔</span>
                 <i data-lucide="sparkles" class="w-4 h-4 text-violet-500"></i>
               </div>
               <div class="flex items-baseline gap-2">
                 <span id="stat-models-count" class="text-3xl font-bold font-mono tracking-tight text-violet-600 dark:text-violet-400">0</span>
-                <span class="text-xs text-slate-400">个推理模型</span>
+                <span class="text-xs text-slate-400">涓帹鐞嗘ā鍨?/span>
               </div>
               <div class="mt-3 pt-3 border-t border-slate-100 dark:border-slate-800 text-[11px] text-slate-400">
-                <span>含 DeepSeek V3 / R1 / 思考链</span>
+                <span>鍚?DeepSeek V3 / R1 / 鎬濊€冮摼</span>
               </div>
             </div>
 
-            <!-- 指标卡 4：网关服务健康度 -->
+            <!-- 鎸囨爣鍗?4锛氱綉鍏虫湇鍔″仴搴峰害 -->
             <div class="p-5 rounded-2xl bg-white dark:bg-dark-card border border-slate-200 dark:border-dark-border shadow-sm">
               <div class="flex items-center justify-between text-slate-400 mb-2">
-                <span class="text-xs font-medium">服务与网关标识</span>
+                <span class="text-xs font-medium">鏈嶅姟涓庣綉鍏虫爣璇?/span>
                 <i data-lucide="server" class="w-4 h-4 text-sky-500"></i>
               </div>
               <div class="flex items-baseline gap-2">
                 <span id="stat-gateway-service" class="text-2xl font-bold font-mono tracking-tight text-sky-600 dark:text-sky-400">workbuddy</span>
               </div>
-              <div class="mt-3 pt-3 border-t border-slate-100 dark:border-slate-800 text-[11px] text-slate-400 flex items-center justify-between">
-                <span>会话粘性路由: <span id="stat-session-sticky" class="font-mono text-slate-300">支持</span></span>
+              <div class="mt-3 pt-3 border-t border-slate-100 dark:border-slate-800 text-[11px] text-slate-400 space-y-1">
+                <div class="flex items-center justify-between">
+                  <span>绮樻€т細璇?/span>
+                  <span id="stat-sticky-sessions" class="font-mono text-slate-500 dark:text-slate-300">0</span>
+                </div>
+                <div class="flex items-center justify-between">
+                  <span>婊¤浇璐﹀彿</span>
+                  <span id="stat-inflight-full" class="font-mono text-slate-500 dark:text-slate-300">0</span>
+                </div>
               </div>
             </div>
           </div>
 
-          <!-- 快速启动横幅 (Banner) -->
+          <!-- 鍙屽煙缁熻锛坈n / global 鍒嗘睜锛夛細浠呭湪瀛樺湪 global 璐﹀彿鏃舵樉绀?-->
+          <div id="realm-totals-box" class="hidden"></div>
+
+          <!-- 蹇€熷惎鍔ㄦí骞?(Banner) -->
           <div class="relative overflow-hidden p-6 rounded-2xl bg-gradient-to-r from-indigo-600 via-indigo-700 to-purple-800 text-white shadow-md border border-indigo-500/30">
             <div class="relative z-10 flex flex-col md:flex-row md:items-center justify-between gap-4">
               <div class="space-y-1">
                 <h3 class="text-base font-bold text-white flex items-center gap-2">
                   <i data-lucide="check-circle" class="w-5 h-5 text-indigo-200"></i>
-                  网关就绪，客户端即可一键接入
-                </h3>
+                  缃戝叧灏辩华锛屽鎴风鍗冲彲涓€閿帴鍏?                </h3>
                 <p class="text-xs text-indigo-100 max-w-xl">
-                  将标准 OpenAI 接口配置为你路由器的反向代理地址，即可在 Cherry Studio、Chatbox、Cursor 等任意客户端中免梯直连。
-                </p>
+                  灏嗘爣鍑?OpenAI 鎺ュ彛閰嶇疆涓轰綘璺敱鍣ㄧ殑鍙嶅悜浠ｇ悊鍦板潃锛屽嵆鍙湪 Cherry Studio銆丆hatbox銆丆ursor 绛変换鎰忓鎴风涓厤姊洿杩炪€?                </p>
               </div>
               <div class="flex items-center gap-3 flex-shrink-0">
                 <button onclick="app.switchTab('playground')" class="px-4 py-2 rounded-xl bg-indigo-600 hover:bg-indigo-500 text-white text-xs font-semibold shadow-lg shadow-indigo-600/30 transition-all flex items-center gap-2">
                   <i data-lucide="play" class="w-3.5 h-3.5"></i>
-                  立即测试对话
+                  绔嬪嵆娴嬭瘯瀵硅瘽
                 </button>
                 <button onclick="app.switchTab('guides')" class="px-4 py-2 rounded-xl bg-white/10 hover:bg-white/20 text-white text-xs font-medium backdrop-blur-md transition-all">
-                  查看接入教程
+                  鏌ョ湅鎺ュ叆鏁欑▼
                 </button>
               </div>
             </div>
           </div>
 
-          <!-- 最近活跃账号速览与端点信息 -->
+          <!-- 鏈€杩戞椿璺冭处鍙烽€熻涓庣鐐逛俊鎭?-->
           <div class="grid grid-cols-1 lg:grid-cols-3 gap-6">
-            <!-- 接口地址配置卡 -->
+            <!-- 鎺ュ彛鍦板潃閰嶇疆鍗?-->
             <div class="lg:col-span-1 p-6 rounded-2xl bg-white dark:bg-dark-card border border-slate-200 dark:border-dark-border space-y-4">
               <h4 class="text-sm font-bold flex items-center gap-2">
                 <i data-lucide="key" class="w-4 h-4 text-indigo-500"></i>
-                API 接入参数速查
+                API 鎺ュ叆鍙傛暟閫熸煡
               </h4>
               <div class="space-y-3 text-xs">
                 <div>
-                  <label class="text-slate-400 block mb-1">Base URL (接口地址)</label>
+                  <label class="text-slate-400 block mb-1">Base URL (鎺ュ彛鍦板潃)</label>
                   <div class="flex items-center gap-2">
                     <input type="text" id="dash-base-url" readonly class="flex-1 bg-slate-50 dark:bg-slate-900 border border-slate-200 dark:border-slate-800 rounded-lg px-3 py-2 font-mono text-[11px] text-slate-700 dark:text-slate-300 select-all">
-                    <button onclick="app.copyId('dash-base-url')" class="p-2 bg-slate-100 dark:bg-slate-800 hover:bg-slate-200 dark:hover:bg-slate-700 rounded-lg text-slate-400 hover:text-white transition-colors" title="复制">
+                    <button onclick="app.copyId('dash-base-url')" class="p-2 bg-slate-100 dark:bg-slate-800 hover:bg-slate-200 dark:hover:bg-slate-700 rounded-lg text-slate-400 hover:text-white transition-colors" title="澶嶅埗">
                       <i data-lucide="copy" class="w-3.5 h-3.5"></i>
                     </button>
                   </div>
                 </div>
                 <div>
-                  <label class="text-slate-400 block mb-1">API Key (令牌)</label>
+                  <label class="text-slate-400 block mb-1">API Key (浠ょ墝)</label>
                   <div class="flex items-center gap-2">
                     <input type="password" id="dash-api-key" readonly class="flex-1 bg-slate-50 dark:bg-slate-900 border border-slate-200 dark:border-slate-800 rounded-lg px-3 py-2 font-mono text-[11px] text-slate-700 dark:text-slate-300 select-all">
                     <button onclick="app.toggleKeyVisibility('dash-api-key')" class="p-2 bg-slate-100 dark:bg-slate-800 hover:bg-slate-200 dark:hover:bg-slate-700 rounded-lg text-slate-400 hover:text-white transition-colors">
@@ -303,135 +334,132 @@
               <div class="p-3 rounded-xl bg-slate-50 dark:bg-slate-900/50 border border-slate-100 dark:border-slate-800 text-[11px] text-slate-500 dark:text-slate-400 space-y-1">
                 <div class="flex items-center gap-1 font-semibold text-slate-700 dark:text-slate-300">
                   <i data-lucide="info" class="w-3.5 h-3.5 text-indigo-400"></i>
-                  小贴士
-                </div>
-                <p>若你的网关配置了 <code>api_key: ""</code>（留空），则客户端内填任意字符（如 <code>123</code>）即可免密使用。</p>
+                  灏忚创澹?                </div>
+                <p>鑻ヤ綘鐨勭綉鍏抽厤缃簡 <code>api_key: ""</code>锛堢暀绌猴級锛屽垯瀹㈡埛绔唴濉换鎰忓瓧绗︼紙濡?<code>123</code>锛夊嵆鍙厤瀵嗕娇鐢ㄣ€?/p>
               </div>
             </div>
 
-            <!-- 账号池健康分布列表 -->
+            <!-- 璐﹀彿姹犲仴搴峰垎甯冨垪琛?-->
             <div class="lg:col-span-2 p-6 rounded-2xl bg-white dark:bg-dark-card border border-slate-200 dark:border-dark-border space-y-4">
               <div class="flex items-center justify-between">
                 <h4 class="text-sm font-bold flex items-center gap-2">
                   <i data-lucide="user-check" class="w-4 h-4 text-emerald-500"></i>
-                  当前在线账号池
-                </h4>
+                  褰撳墠鍦ㄧ嚎璐﹀彿姹?                </h4>
                 <button onclick="app.switchTab('accounts')" class="text-xs text-indigo-500 hover:text-indigo-400 flex items-center gap-1 font-medium">
-                  查看完整大厅 <i data-lucide="chevron-right" class="w-3.5 h-3.5"></i>
+                  鏌ョ湅瀹屾暣澶у巺 <i data-lucide="chevron-right" class="w-3.5 h-3.5"></i>
                 </button>
               </div>
 
-              <!-- 列表容器 -->
+              <!-- 鍒楄〃瀹瑰櫒 -->
               <div id="dash-accounts-preview" class="space-y-2.5">
-                <!-- 动态填充 preview 列表 -->
-                <div class="text-center py-8 text-xs text-slate-400">正在获取账号列表...</div>
+                <!-- 鍔ㄦ€佸～鍏?preview 鍒楄〃 -->
+                <div class="text-center py-8 text-xs text-slate-400">姝ｅ湪鑾峰彇璐﹀彿鍒楄〃...</div>
               </div>
             </div>
           </div>
         </section>
 
-        <!-- 2. 账号监控大厅 TAB -->
+        <!-- 2. 璐﹀彿鐩戞帶澶у巺 TAB -->
         <section id="tab-accounts" class="tab-pane hidden space-y-6">
           <div class="flex flex-col sm:flex-row sm:items-center justify-between gap-4">
             <div>
-              <h3 class="text-base font-bold">账号状态监测</h3>
-              <p class="text-xs text-slate-400 mt-0.5">实时查询配额余量、签到状态与可用模型（点击刷新才请求上游）</p>
+              <h3 class="text-base font-bold">璐﹀彿鐘舵€佺洃娴?/h3>
+              <p class="text-xs text-slate-400 mt-0.5">瀹炴椂鏌ヨ閰嶉浣欓噺銆佺鍒扮姸鎬佷笌鍙敤妯″瀷锛堢偣鍑诲埛鏂版墠璇锋眰涓婃父锛?/p>
             </div>
             <div class="flex items-center gap-2">
               <span id="accounts-updated" class="text-xs text-slate-400"></span>
               <button id="btn-accounts-refresh" onclick="app.refreshAccountStatus(true)" class="px-3 py-1.5 rounded-lg bg-indigo-600 hover:bg-indigo-500 text-white text-xs font-medium transition-colors flex items-center gap-1.5 disabled:opacity-60">
-                <i data-lucide="refresh-cw" class="w-3.5 h-3.5" id="accounts-refresh-icon"></i> 刷新全部
+                <i data-lucide="refresh-cw" class="w-3.5 h-3.5" id="accounts-refresh-icon"></i> 鍒锋柊鍏ㄩ儴
               </button>
             </div>
           </div>
 
-          <!-- 账号状态卡片网格 -->
+          <!-- 璐﹀彿鐘舵€佸崱鐗囩綉鏍?-->
           <div id="accounts-grid" class="grid grid-cols-1 md:grid-cols-2 xl:grid-cols-3 gap-5">
-            <!-- 动态渲染 -->
+            <!-- 鍔ㄦ€佹覆鏌?-->
           </div>
         </section>
 
-        <!-- 凭证管理 TAB -->
+        <!-- 鍑瘉绠＄悊 TAB -->
         <section id="tab-credentials" class="tab-pane hidden space-y-6">
           <div class="flex flex-col sm:flex-row sm:items-center justify-between gap-4">
             <div>
-              <h3 class="text-base font-bold">凭证管理</h3>
-              <p class="text-xs text-slate-400 mt-0.5">添加 / 删除 CodeBuddy 账号凭证，改动立即热生效</p>
+              <h3 class="text-base font-bold">鍑瘉绠＄悊</h3>
+              <p class="text-xs text-slate-400 mt-0.5">娣诲姞 / 鍒犻櫎 CodeBuddy 璐﹀彿鍑瘉锛屾敼鍔ㄧ珛鍗崇儹鐢熸晥</p>
             </div>
             <div class="flex items-center gap-2">
               <button onclick="app.reloadCredentials()" class="px-3 py-1.5 rounded-lg bg-slate-100 dark:bg-slate-800 hover:bg-slate-200 dark:hover:bg-slate-700 text-xs font-medium transition-colors flex items-center gap-1.5">
-                <i data-lucide="rotate-cw" class="w-3.5 h-3.5"></i> 重新扫描
+                <i data-lucide="rotate-cw" class="w-3.5 h-3.5"></i> 閲嶆柊鎵弿
               </button>
               <button onclick="app.openOAuthModal()" class="px-3 py-1.5 rounded-lg bg-indigo-600 hover:bg-indigo-500 text-white text-xs font-medium transition-colors flex items-center gap-1.5">
-                <i data-lucide="plus" class="w-3.5 h-3.5"></i> 登录添加账号
+                <i data-lucide="plus" class="w-3.5 h-3.5"></i> 鐧诲綍娣诲姞璐﹀彿
               </button>
             </div>
           </div>
 
-          <!-- 凭证列表 -->
+          <!-- 鍑瘉鍒楄〃 -->
           <div class="rounded-2xl bg-white dark:bg-dark-card border border-slate-200 dark:border-dark-border overflow-hidden">
             <div id="credentials-list" class="divide-y divide-slate-100 dark:divide-slate-800">
-              <!-- 动态渲染 -->
+              <!-- 鍔ㄦ€佹覆鏌?-->
             </div>
           </div>
 
-          <!-- 异常文件提示 -->
+          <!-- 寮傚父鏂囦欢鎻愮ず -->
           <div id="credentials-broken" class="hidden rounded-2xl bg-amber-500/5 border border-amber-500/20 p-4 space-y-2">
             <div class="flex items-center gap-2 text-amber-600 dark:text-amber-400 text-xs font-semibold">
               <i data-lucide="alert-triangle" class="w-4 h-4"></i>
-              <span>发现无法解析的凭证文件</span>
+              <span>鍙戠幇鏃犳硶瑙ｆ瀽鐨勫嚟璇佹枃浠?/span>
             </div>
             <div id="credentials-broken-list" class="text-xs text-slate-500 dark:text-slate-400 space-y-1 font-mono"></div>
           </div>
 
-          <!-- 手动添加（折叠） -->
+          <!-- 鎵嬪姩娣诲姞锛堟姌鍙狅級 -->
           <details class="rounded-2xl bg-white dark:bg-dark-card border border-slate-200 dark:border-dark-border p-5">
-            <summary class="text-xs font-semibold cursor-pointer select-none">手动粘贴 Token 添加（备用方式）</summary>
+            <summary class="text-xs font-semibold cursor-pointer select-none">鎵嬪姩绮樿创 Token 娣诲姞锛堝鐢ㄦ柟寮忥級</summary>
             <div class="mt-4 grid grid-cols-1 md:grid-cols-2 gap-3">
-              <input id="cred-token" type="password" placeholder="accessToken（必填）" class="md:col-span-2 w-full px-3 py-2 text-xs font-mono rounded-xl bg-slate-50 dark:bg-slate-900/60 border border-slate-200 dark:border-slate-800 focus:outline-none focus:border-indigo-500">
-              <input id="cred-refresh" type="password" placeholder="refreshToken（可选，填了才能自动续期）" class="md:col-span-2 w-full px-3 py-2 text-xs font-mono rounded-xl bg-slate-50 dark:bg-slate-900/60 border border-slate-200 dark:border-slate-800 focus:outline-none focus:border-indigo-500">
-              <input id="cred-nickname" type="text" placeholder="昵称（可选，仅用于显示）" class="w-full px-3 py-2 text-xs rounded-xl bg-slate-50 dark:bg-slate-900/60 border border-slate-200 dark:border-slate-800 focus:outline-none focus:border-indigo-500">
-              <input id="cred-uid" type="text" placeholder="UID（可选，留空自动派生）" class="w-full px-3 py-2 text-xs font-mono rounded-xl bg-slate-50 dark:bg-slate-900/60 border border-slate-200 dark:border-slate-800 focus:outline-none focus:border-indigo-500">
+              <input id="cred-token" type="password" placeholder="accessToken锛堝繀濉級" class="md:col-span-2 w-full px-3 py-2 text-xs font-mono rounded-xl bg-slate-50 dark:bg-slate-900/60 border border-slate-200 dark:border-slate-800 focus:outline-none focus:border-indigo-500">
+              <input id="cred-refresh" type="password" placeholder="refreshToken锛堝彲閫夛紝濉簡鎵嶈兘鑷姩缁湡锛? class="md:col-span-2 w-full px-3 py-2 text-xs font-mono rounded-xl bg-slate-50 dark:bg-slate-900/60 border border-slate-200 dark:border-slate-800 focus:outline-none focus:border-indigo-500">
+              <input id="cred-nickname" type="text" placeholder="鏄电О锛堝彲閫夛紝浠呯敤浜庢樉绀猴級" class="w-full px-3 py-2 text-xs rounded-xl bg-slate-50 dark:bg-slate-900/60 border border-slate-200 dark:border-slate-800 focus:outline-none focus:border-indigo-500">
+              <input id="cred-uid" type="text" placeholder="UID锛堝彲閫夛紝鐣欑┖鑷姩娲剧敓锛? class="w-full px-3 py-2 text-xs font-mono rounded-xl bg-slate-50 dark:bg-slate-900/60 border border-slate-200 dark:border-slate-800 focus:outline-none focus:border-indigo-500">
               <button onclick="app.uploadCredential()" class="md:col-span-2 px-4 py-2 rounded-xl bg-slate-800 dark:bg-slate-700 hover:bg-slate-700 dark:hover:bg-slate-600 text-white text-xs font-medium transition-colors">
-                保存并加载
-              </button>
+                淇濆瓨骞跺姞杞?              </button>
             </div>
           </details>
         </section>
 
-        <!-- 3. 模型广场 TAB -->
+        <!-- 3. 妯″瀷骞垮満 TAB -->
         <section id="tab-models" class="tab-pane hidden space-y-6">
           <div class="flex flex-col sm:flex-row sm:items-center justify-between gap-4">
             <div>
-              <h3 class="text-base font-bold">兼容模型列表</h3>
-              <p class="text-xs text-slate-400 mt-0.5">支持在所有 OpenAI / Anthropic 客户端中使用的模型名</p>
+              <h3 class="text-base font-bold">鍏煎妯″瀷鍒楄〃</h3>
+              <p class="text-xs text-slate-400 mt-0.5">鏀寔鍦ㄦ墍鏈?OpenAI / Anthropic 瀹㈡埛绔腑浣跨敤鐨勬ā鍨嬪悕</p>
             </div>
-            <div class="relative w-64">
+            <div class="relative w-full sm:w-64">
               <i data-lucide="search" class="w-4 h-4 text-slate-400 absolute left-3 top-2.5"></i>
-              <input type="text" id="model-search-input" oninput="app.filterModels()" placeholder="搜索模型名称..." class="w-full bg-white dark:bg-dark-card border border-slate-200 dark:border-dark-border rounded-xl pl-9 pr-3 py-1.5 text-xs text-slate-700 dark:text-slate-200 placeholder-slate-400 focus:outline-none focus:border-indigo-500">
+              <input type="text" id="model-search-input" oninput="app.filterModels()" placeholder="鎼滅储妯″瀷鍚嶇О..." class="w-full bg-white dark:bg-dark-card border border-slate-200 dark:border-dark-border rounded-xl pl-9 pr-3 py-1.5 text-xs text-slate-700 dark:text-slate-200 placeholder-slate-400 focus:outline-none focus:border-indigo-500">
             </div>
           </div>
 
-          <!-- 模型卡片列表 -->
+          <!-- 妯″瀷鍗＄墖鍒楄〃 -->
           <div id="models-container" class="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-4">
-            <!-- 动态渲染 -->
+            <!-- 鍔ㄦ€佹覆鏌?-->
           </div>
         </section>
 
-        <!-- 4. API 在线测试沙盒 (Playground) TAB -->
+        <!-- 4. API 鍦ㄧ嚎娴嬭瘯娌欑洅 (Playground) TAB -->
         <section id="tab-playground" class="tab-pane hidden space-y-6">
           <div class="flex items-center justify-between">
             <div>
               <h3 class="text-base font-bold flex items-center gap-2">
                 <i data-lucide="terminal" class="w-4 h-4 text-indigo-500"></i>
-                API 在线测试沙盒
+                API 鍦ㄧ嚎娴嬭瘯娌欑洅
               </h3>
-              <p class="text-xs text-slate-400 mt-0.5">直接通过网页向路由器网关发送真实流式对话，实时测试延迟与连通性</p>
+              <p class="text-xs text-slate-400 mt-0.5">鐩存帴閫氳繃缃戦〉鍚戣矾鐢卞櫒缃戝叧鍙戦€佺湡瀹炴祦寮忓璇濓紝瀹炴椂娴嬭瘯寤惰繜涓庤繛閫氭€?/p>
             </div>
             <div class="flex items-center gap-3">
-              <!-- 选择模型 -->
+              <!-- 閫夋嫨妯″瀷 -->
               <div class="flex items-center gap-2">
-                <label class="text-xs text-slate-400">选择测试模型:</label>
+                <label class="text-xs text-slate-400">閫夋嫨娴嬭瘯妯″瀷:</label>
                 <select id="play-model-select" class="bg-white dark:bg-dark-card border border-slate-200 dark:border-dark-border rounded-xl px-3 py-1.5 text-xs text-slate-700 dark:text-slate-200 focus:outline-none focus:border-indigo-500">
                   <option value="deepseek-v3">deepseek-v3</option>
                   <option value="deepseek-r1">deepseek-r1</option>
@@ -439,138 +467,137 @@
                 </select>
               </div>
               <button onclick="app.clearChat()" class="px-3 py-1.5 text-xs rounded-xl border border-slate-200 dark:border-dark-border hover:bg-slate-100 dark:hover:bg-dark-hover transition-colors text-slate-400 hover:text-slate-200">
-                清空对话
+                娓呯┖瀵硅瘽
               </button>
             </div>
           </div>
 
-          <!-- 对话主视窗 -->
+          <!-- 瀵硅瘽涓昏绐?-->
           <div class="flex flex-col h-[600px] rounded-2xl bg-white dark:bg-dark-card border border-slate-200 dark:border-dark-border overflow-hidden shadow-sm">
-            <!-- 消息流容器 -->
+            <!-- 娑堟伅娴佸鍣?-->
             <div id="chat-messages" class="flex-1 overflow-y-auto p-6 space-y-5">
-              <!-- 初始欢迎消息 -->
+              <!-- 鍒濆娆㈣繋娑堟伅 -->
               <div class="flex items-start gap-3">
                 <div class="w-8 h-8 rounded-lg bg-indigo-600/20 text-indigo-500 flex items-center justify-center flex-shrink-0">
                   <i data-lucide="bot" class="w-4 h-4"></i>
                 </div>
                 <div class="max-w-2xl bg-slate-100 dark:bg-slate-900 border border-slate-200/80 dark:border-slate-800 rounded-2xl px-4 py-3 text-xs leading-relaxed space-y-2">
-                  <p class="font-semibold text-slate-800 dark:text-slate-200">你好！我是 WorkBuddy 在线测试助手。</p>
-                  <p class="text-slate-500 dark:text-slate-400">你可以在下方输入框中发送任何指令，我会以 <strong>SSE 实时流式响应（打字机效果）</strong> 返回，以此来验证路由器网关的连接、响应速度与推理链路是否完全通畅。</p>
+                  <p class="font-semibold text-slate-800 dark:text-slate-200">浣犲ソ锛佹垜鏄?WorkBuddy 鍦ㄧ嚎娴嬭瘯鍔╂墜銆?/p>
+                  <p class="text-slate-500 dark:text-slate-400">浣犲彲浠ュ湪涓嬫柟杈撳叆妗嗕腑鍙戦€佷换浣曟寚浠わ紝鎴戜細浠?<strong>SSE 瀹炴椂娴佸紡鍝嶅簲锛堟墦瀛楁満鏁堟灉锛?/strong> 杩斿洖锛屼互姝ゆ潵楠岃瘉璺敱鍣ㄧ綉鍏崇殑杩炴帴銆佸搷搴旈€熷害涓庢帹鐞嗛摼璺槸鍚﹀畬鍏ㄩ€氱晠銆?/p>
                 </div>
               </div>
             </div>
 
-            <!-- 底部性能与指标小条 -->
+            <!-- 搴曢儴鎬ц兘涓庢寚鏍囧皬鏉?-->
             <div id="chat-metrics-bar" class="hidden px-6 py-1.5 bg-slate-50 dark:bg-slate-900/70 border-t border-slate-200/60 dark:border-slate-800/60 flex items-center justify-between text-[11px] font-mono text-slate-400">
-              <span id="chat-metric-ttft">首字耗时: -- ms</span>
-              <span id="chat-metric-speed">生成速率: -- tok/s</span>
-              <span id="chat-metric-total">总耗时: -- s</span>
+              <span id="chat-metric-ttft">棣栧瓧鑰楁椂: -- ms</span>
+              <span id="chat-metric-speed">鐢熸垚閫熺巼: -- tok/s</span>
+              <span id="chat-metric-total">鎬昏€楁椂: -- s</span>
             </div>
 
-            <!-- 底部输入框 -->
+            <!-- 搴曢儴杈撳叆妗?-->
             <div class="p-4 border-t border-slate-200 dark:border-dark-border bg-slate-50/50 dark:bg-slate-900/30">
               <form onsubmit="app.sendChatMessage(event)" class="flex items-end gap-3">
                 <div class="flex-1 relative">
-                  <textarea id="chat-input" rows="2" placeholder="输入测试问题，按 Enter 发送，Shift+Enter 换行..." class="w-full resize-none bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-800 rounded-xl px-4 py-2.5 text-xs text-slate-800 dark:text-slate-200 placeholder-slate-400 focus:outline-none focus:border-indigo-500 focus:ring-1 focus:ring-indigo-500"></textarea>
+                  <textarea id="chat-input" rows="2" placeholder="杈撳叆娴嬭瘯闂锛屾寜 Enter 鍙戦€侊紝Shift+Enter 鎹㈣..." class="w-full resize-none bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-800 rounded-xl px-4 py-2.5 text-xs text-slate-800 dark:text-slate-200 placeholder-slate-400 focus:outline-none focus:border-indigo-500 focus:ring-1 focus:ring-indigo-500"></textarea>
                 </div>
                 <button type="submit" id="btn-send-chat" class="px-5 py-3 rounded-xl bg-indigo-600 hover:bg-indigo-500 text-white font-medium text-xs shadow-lg shadow-indigo-500/20 transition-all flex items-center gap-2 flex-shrink-0 disabled:opacity-50">
                   <i data-lucide="send" class="w-3.5 h-3.5"></i>
-                  <span>发送</span>
+                  <span>鍙戦€?/span>
                 </button>
               </form>
             </div>
           </div>
         </section>
 
-        <!-- 5. 客户端接入指南 TAB -->
+        <!-- 5. 瀹㈡埛绔帴鍏ユ寚鍗?TAB -->
         <section id="tab-guides" class="tab-pane hidden space-y-6">
           <div>
-            <h3 class="text-base font-bold">常用客户端快速接入指引</h3>
-            <p class="text-xs text-slate-400 mt-0.5">复制对应客户端的配置信息，即可在电脑或手机上直接使用</p>
+            <h3 class="text-base font-bold">甯哥敤瀹㈡埛绔揩閫熸帴鍏ユ寚寮?/h3>
+            <p class="text-xs text-slate-400 mt-0.5">澶嶅埗瀵瑰簲瀹㈡埛绔殑閰嶇疆淇℃伅锛屽嵆鍙湪鐢佃剳鎴栨墜鏈轰笂鐩存帴浣跨敤</p>
           </div>
 
           <div class="grid grid-cols-1 md:grid-cols-2 gap-6">
-            <!-- 指南 1：Cherry Studio -->
+            <!-- 鎸囧崡 1锛欳herry Studio -->
             <div class="p-6 rounded-2xl bg-white dark:bg-dark-card border border-slate-200 dark:border-dark-border space-y-4">
               <div class="flex items-center gap-3">
                 <div class="w-10 h-10 rounded-xl bg-purple-500/10 text-purple-500 flex items-center justify-center font-bold">
-                  🍒
+                  馃崚
                 </div>
                 <div>
                   <h4 class="text-sm font-bold">Cherry Studio</h4>
-                  <span class="text-xs text-slate-400">强烈推荐的桌面多模型客户端</span>
+                  <span class="text-xs text-slate-400">寮虹儓鎺ㄨ崘鐨勬闈㈠妯″瀷瀹㈡埛绔?/span>
                 </div>
               </div>
               <div class="space-y-2 text-xs">
-                <p class="text-slate-500 dark:text-slate-400">1. 打开 Cherry Studio 设置 → <strong>模型服务</strong> → 添加 <strong>OpenAI</strong> 兼容格式服务；</p>
-                <p class="text-slate-500 dark:text-slate-400">2. 填入如下参数：</p>
+                <p class="text-slate-500 dark:text-slate-400">1. 鎵撳紑 Cherry Studio 璁剧疆 鈫?<strong>妯″瀷鏈嶅姟</strong> 鈫?娣诲姞 <strong>OpenAI</strong> 鍏煎鏍煎紡鏈嶅姟锛?/p>
+                <p class="text-slate-500 dark:text-slate-400">2. 濉叆濡備笅鍙傛暟锛?/p>
                 <div class="p-3 rounded-xl bg-slate-100 dark:bg-slate-900 font-mono text-[11px] space-y-1.5 text-slate-700 dark:text-slate-300">
-                  <div><strong>API 域名:</strong> <span class="guide-url">http://localhost:7863</span></div>
+                  <div><strong>API 鍩熷悕:</strong> <span class="guide-url">http://localhost:7863</span></div>
                   <div><strong>API Key:</strong> <span class="guide-key">sk-xxxx</span></div>
-                  <div><strong>模型名:</strong> deepseek-v3 / deepseek-r1</div>
+                  <div><strong>妯″瀷鍚?</strong> deepseek-v3 / deepseek-r1</div>
                 </div>
               </div>
               <button onclick="app.copyCherryConfig()" class="w-full py-2 rounded-xl bg-indigo-50 dark:bg-indigo-950/40 text-indigo-600 dark:text-indigo-400 hover:bg-indigo-100 text-xs font-semibold transition-colors flex items-center justify-center gap-2">
-                <i data-lucide="copy" class="w-3.5 h-3.5"></i> 复制配置参数
+                <i data-lucide="copy" class="w-3.5 h-3.5"></i> 澶嶅埗閰嶇疆鍙傛暟
               </button>
             </div>
 
-            <!-- 指南 2：Chatbox -->
+            <!-- 鎸囧崡 2锛欳hatbox -->
             <div class="p-6 rounded-2xl bg-white dark:bg-dark-card border border-slate-200 dark:border-dark-border space-y-4">
               <div class="flex items-center gap-3">
                 <div class="w-10 h-10 rounded-xl bg-sky-500/10 text-sky-500 flex items-center justify-center font-bold">
-                  💬
+                  馃挰
                 </div>
                 <div>
                   <h4 class="text-sm font-bold">Chatbox</h4>
-                  <span class="text-xs text-slate-400">经典轻量跨平台客户端</span>
+                  <span class="text-xs text-slate-400">缁忓吀杞婚噺璺ㄥ钩鍙板鎴风</span>
                 </div>
               </div>
               <div class="space-y-2 text-xs">
-                <p class="text-slate-500 dark:text-slate-400">1. 设置 → 模型提供商选择 <strong>OpenAI API</strong>；</p>
-                <p class="text-slate-500 dark:text-slate-400">2. 勾选“自定义 API 域名”，填入网关地址：</p>
+                <p class="text-slate-500 dark:text-slate-400">1. 璁剧疆 鈫?妯″瀷鎻愪緵鍟嗛€夋嫨 <strong>OpenAI API</strong>锛?/p>
+                <p class="text-slate-500 dark:text-slate-400">2. 鍕鹃€夆€滆嚜瀹氫箟 API 鍩熷悕鈥濓紝濉叆缃戝叧鍦板潃锛?/p>
                 <div class="p-3 rounded-xl bg-slate-100 dark:bg-slate-900 font-mono text-[11px] space-y-1.5 text-slate-700 dark:text-slate-300">
-                  <div><strong>API 主机:</strong> <span class="guide-url">http://localhost:7863</span></div>
+                  <div><strong>API 涓绘満:</strong> <span class="guide-url">http://localhost:7863</span></div>
                   <div><strong>API Key:</strong> <span class="guide-key">sk-xxxx</span></div>
                 </div>
               </div>
               <button onclick="app.copyChatboxConfig()" class="w-full py-2 rounded-xl bg-slate-100 dark:bg-slate-800 text-slate-700 dark:text-slate-300 hover:bg-slate-200 text-xs font-semibold transition-colors flex items-center justify-center gap-2">
-                <i data-lucide="copy" class="w-3.5 h-3.5"></i> 复制主机与秘钥
-              </button>
+                <i data-lucide="copy" class="w-3.5 h-3.5"></i> 澶嶅埗涓绘満涓庣閽?              </button>
             </div>
 
-            <!-- 指南 3：Cursor / VS Code -->
+            <!-- 鎸囧崡 3锛欳ursor / VS Code -->
             <div class="p-6 rounded-2xl bg-white dark:bg-dark-card border border-slate-200 dark:border-dark-border space-y-4">
               <div class="flex items-center gap-3">
                 <div class="w-10 h-10 rounded-xl bg-emerald-500/10 text-emerald-500 flex items-center justify-center font-bold">
-                  💻
+                  馃捇
                 </div>
                 <div>
-                  <h4 class="text-sm font-bold">Cursor / VS Code AI 插件</h4>
-                  <span class="text-xs text-slate-400">写代码直接接入智能补全</span>
+                  <h4 class="text-sm font-bold">Cursor / VS Code AI 鎻掍欢</h4>
+                  <span class="text-xs text-slate-400">鍐欎唬鐮佺洿鎺ユ帴鍏ユ櫤鑳借ˉ鍏?/span>
                 </div>
               </div>
               <div class="space-y-2 text-xs">
-                <p class="text-slate-500 dark:text-slate-400">在 Cursor 设置中打开 <strong>OpenAI API Key</strong> 选项：</p>
+                <p class="text-slate-500 dark:text-slate-400">鍦?Cursor 璁剧疆涓墦寮€ <strong>OpenAI API Key</strong> 閫夐」锛?/p>
                 <div class="p-3 rounded-xl bg-slate-100 dark:bg-slate-900 font-mono text-[11px] space-y-1.5 text-slate-700 dark:text-slate-300">
                   <div><strong>Base URL:</strong> <span class="guide-v1-url">http://localhost:7863/v1</span></div>
                   <div><strong>Model:</strong> deepseek-v3</div>
                 </div>
               </div>
               <button onclick="app.copyId('guide-v1-url')" class="w-full py-2 rounded-xl bg-slate-100 dark:bg-slate-800 text-slate-700 dark:text-slate-300 hover:bg-slate-200 text-xs font-semibold transition-colors flex items-center justify-center gap-2">
-                <i data-lucide="copy" class="w-3.5 h-3.5"></i> 复制 /v1 端点
+                <i data-lucide="copy" class="w-3.5 h-3.5"></i> 澶嶅埗 /v1 绔偣
               </button>
             </div>
 
-            <!-- 指南 4：Python / Node.js 官方 SDK -->
+            <!-- 鎸囧崡 4锛歅ython / Node.js 瀹樻柟 SDK -->
             <div class="p-6 rounded-2xl bg-white dark:bg-dark-card border border-slate-200 dark:border-dark-border space-y-4">
               <div class="flex items-center gap-3">
                 <div class="w-10 h-10 rounded-xl bg-amber-500/10 text-amber-500 flex items-center justify-center font-bold">
-                  🐍
+                  馃悕
                 </div>
                 <div>
                   <h4 class="text-sm font-bold">Python / OpenAI SDK</h4>
-                  <span class="text-xs text-slate-400">代码自动化与脚本调用</span>
+                  <span class="text-xs text-slate-400">浠ｇ爜鑷姩鍖栦笌鑴氭湰璋冪敤</span>
                 </div>
               </div>
               <pre class="p-3 rounded-xl bg-slate-100 dark:bg-slate-900 font-mono text-[11px] overflow-x-auto text-slate-700 dark:text-slate-300"><code>from openai import OpenAI
@@ -581,57 +608,57 @@ client = OpenAI(
 )
 resp = client.chat.completions.create(
     model="deepseek-v3",
-    messages=[{"role": "user", "content": "你好"}]
+    messages=[{"role": "user", "content": "浣犲ソ"}]
 )</code></pre>
             </div>
           </div>
         </section>
 
-        <!-- 用量统计 TAB -->
+        <!-- 鐢ㄩ噺缁熻 TAB -->
         <section id="tab-usage" class="tab-pane hidden space-y-6">
           <div class="flex flex-col sm:flex-row sm:items-center justify-between gap-4">
             <div>
-              <h3 class="text-base font-bold">Token 用量与请求分析</h3>
-              <p class="text-xs text-slate-400 mt-0.5">多维度统计网关请求量、Token 消耗及各账号/模型配额分布</p>
+              <h3 class="text-base font-bold">Token 鐢ㄩ噺涓庤姹傚垎鏋?/h3>
+              <p class="text-xs text-slate-400 mt-0.5">澶氱淮搴︾粺璁＄綉鍏宠姹傞噺銆乀oken 娑堣€楀強鍚勮处鍙?妯″瀷閰嶉鍒嗗竷</p>
             </div>
 
-            <!-- 时间筛选药丸与刷新控制 -->
+            <!-- 鏃堕棿绛涢€夎嵂涓镐笌鍒锋柊鎺у埗 -->
             <div class="flex items-center gap-2">
               <div class="bg-slate-100 dark:bg-slate-900 p-1 rounded-xl flex items-center gap-1 border border-slate-200 dark:border-slate-800 text-xs">
-                <button onclick="app.setUsageRange('1h')" class="usage-range-btn px-3 py-1 rounded-lg text-slate-500 dark:text-slate-400 hover:text-slate-900 dark:hover:text-white transition-all font-medium" data-range="1h">1小时</button>
-                <button onclick="app.setUsageRange('today')" class="usage-range-btn px-3 py-1 rounded-lg text-slate-500 dark:text-slate-400 hover:text-slate-900 dark:hover:text-white transition-all font-medium" data-range="today">今日</button>
-                <button onclick="app.setUsageRange('24h')" class="usage-range-btn active px-3 py-1 rounded-lg bg-white dark:bg-dark-card shadow-sm text-indigo-600 dark:text-indigo-400 font-semibold transition-all" data-range="24h">24小时</button>
-                <button onclick="app.setUsageRange('7d')" class="usage-range-btn px-3 py-1 rounded-lg text-slate-500 dark:text-slate-400 hover:text-slate-900 dark:hover:text-white transition-all font-medium" data-range="7d">7天</button>
-                <button onclick="app.setUsageRange('all')" class="usage-range-btn px-3 py-1 rounded-lg text-slate-500 dark:text-slate-400 hover:text-slate-900 dark:hover:text-white transition-all font-medium" data-range="all">全部</button>
+                <button onclick="app.setUsageRange('1h')" class="usage-range-btn px-3 py-1 rounded-lg text-slate-500 dark:text-slate-400 hover:text-slate-900 dark:hover:text-white transition-all font-medium" data-range="1h">1灏忔椂</button>
+                <button onclick="app.setUsageRange('today')" class="usage-range-btn px-3 py-1 rounded-lg text-slate-500 dark:text-slate-400 hover:text-slate-900 dark:hover:text-white transition-all font-medium" data-range="today">浠婃棩</button>
+                <button onclick="app.setUsageRange('24h')" class="usage-range-btn active px-3 py-1 rounded-lg bg-white dark:bg-dark-card shadow-sm text-indigo-600 dark:text-indigo-400 font-semibold transition-all" data-range="24h">24灏忔椂</button>
+                <button onclick="app.setUsageRange('7d')" class="usage-range-btn px-3 py-1 rounded-lg text-slate-500 dark:text-slate-400 hover:text-slate-900 dark:hover:text-white transition-all font-medium" data-range="7d">7澶?/button>
+                <button onclick="app.setUsageRange('all')" class="usage-range-btn px-3 py-1 rounded-lg text-slate-500 dark:text-slate-400 hover:text-slate-900 dark:hover:text-white transition-all font-medium" data-range="all">鍏ㄩ儴</button>
               </div>
 
-              <button onclick="app.clearUsageHistory()" class="px-3 py-1.5 rounded-xl border border-rose-500/20 text-rose-500 hover:bg-rose-500/10 text-xs font-medium transition-colors flex items-center gap-1.5" title="清空历史用量数据">
+              <button onclick="app.clearUsageHistory()" class="px-3 py-1.5 rounded-xl border border-rose-500/20 text-rose-500 hover:bg-rose-500/10 text-xs font-medium transition-colors flex items-center gap-1.5" title="娓呯┖鍘嗗彶鐢ㄩ噺鏁版嵁">
                 <i data-lucide="trash-2" class="w-3.5 h-3.5"></i>
-                <span class="hidden sm:inline">重置</span>
+                <span class="hidden sm:inline">閲嶇疆</span>
               </button>
             </div>
           </div>
 
-          <!-- 4 宫格核心指标卡 -->
-          <div class="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-4">
-            <!-- 总请求数 -->
+          <!-- 4 瀹牸鏍稿績鎸囨爣鍗?-->
+          <div class="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 xl:grid-cols-5 gap-4">
+            <!-- 鎬昏姹傛暟 -->
             <div class="p-5 rounded-2xl bg-white dark:bg-dark-card border border-slate-200 dark:border-dark-border relative overflow-hidden">
               <div class="flex items-center justify-between">
-                <span class="text-xs text-slate-400">总调用次数</span>
+                <span class="text-xs text-slate-400">鎬昏皟鐢ㄦ鏁?/span>
                 <div class="w-8 h-8 rounded-xl bg-blue-500/10 text-blue-500 flex items-center justify-center">
                   <i data-lucide="activity" class="w-4 h-4"></i>
                 </div>
               </div>
               <div class="mt-3 flex items-baseline gap-2">
                 <span id="usage-total-requests" class="text-2xl font-black tracking-tight font-mono">0</span>
-                <span class="text-xs text-slate-400">次</span>
+                <span class="text-xs text-slate-400">娆?/span>
               </div>
             </div>
 
-            <!-- 总 Token 消耗 -->
+            <!-- 鎬?Token 娑堣€?-->
             <div class="p-5 rounded-2xl bg-white dark:bg-dark-card border border-slate-200 dark:border-dark-border relative overflow-hidden">
               <div class="flex items-center justify-between">
-                <span class="text-xs text-slate-400">总 Token 消耗</span>
+                <span class="text-xs text-slate-400">鎬?Token 娑堣€?/span>
                 <div class="w-8 h-8 rounded-xl bg-indigo-500/10 text-indigo-500 flex items-center justify-center">
                   <i data-lucide="coins" class="w-4 h-4"></i>
                 </div>
@@ -645,7 +672,7 @@ resp = client.chat.completions.create(
             <!-- Prompt Token -->
             <div class="p-5 rounded-2xl bg-white dark:bg-dark-card border border-slate-200 dark:border-dark-border relative overflow-hidden">
               <div class="flex items-center justify-between">
-                <span class="text-xs text-slate-400">输入 Prompt Tokens</span>
+                <span class="text-xs text-slate-400">杈撳叆 Prompt Tokens</span>
                 <div class="w-8 h-8 rounded-xl bg-emerald-500/10 text-emerald-500 flex items-center justify-center">
                   <i data-lucide="arrow-down-left" class="w-4 h-4"></i>
                 </div>
@@ -659,7 +686,7 @@ resp = client.chat.completions.create(
             <!-- Completion Token -->
             <div class="p-5 rounded-2xl bg-white dark:bg-dark-card border border-slate-200 dark:border-dark-border relative overflow-hidden">
               <div class="flex items-center justify-between">
-                <span class="text-xs text-slate-400">输出 Completion Tokens</span>
+                <span class="text-xs text-slate-400">杈撳嚭 Completion Tokens</span>
                 <div class="w-8 h-8 rounded-xl bg-purple-500/10 text-purple-500 flex items-center justify-center">
                   <i data-lucide="arrow-up-right" class="w-4 h-4"></i>
                 </div>
@@ -669,75 +696,91 @@ resp = client.chat.completions.create(
                 <span class="text-xs text-slate-400">tokens</span>
               </div>
             </div>
+
+            <!-- 娑堣€楃Н鍒嗭紙鍚庣 total_credit锛?-->
+            <div class="p-5 rounded-2xl bg-white dark:bg-dark-card border border-slate-200 dark:border-dark-border relative overflow-hidden">
+              <div class="flex items-center justify-between">
+                <span class="text-xs text-slate-400">娑堣€楃Н鍒?/span>
+                <div class="w-8 h-8 rounded-xl bg-amber-500/10 text-amber-500 flex items-center justify-center">
+                  <i data-lucide="coins" class="w-4 h-4"></i>
+                </div>
+              </div>
+              <div class="mt-3 flex items-baseline gap-2">
+                <span id="usage-total-credit" class="text-2xl font-black tracking-tight font-mono">0</span>
+                <span class="text-xs text-slate-400">credits</span>
+              </div>
+            </div>
           </div>
 
-          <!-- 趋势图表区 (SVG 交互图表) -->
+          <!-- 瓒嬪娍鍥捐〃鍖?(SVG 浜や簰鍥捐〃) -->
           <div class="p-6 rounded-2xl bg-white dark:bg-dark-card border border-slate-200 dark:border-dark-border space-y-4">
             <div class="flex items-center justify-between">
               <h4 class="text-sm font-bold flex items-center gap-2">
                 <i data-lucide="trending-up" class="w-4 h-4 text-indigo-500"></i>
-                Token 消耗与调用趋势
+                Token 娑堣€椾笌璋冪敤瓒嬪娍
               </h4>
-              <span id="usage-chart-range-label" class="text-xs text-slate-400">最近 24 小时</span>
+              <span id="usage-chart-range-label" class="text-xs text-slate-400">鏈€杩?24 灏忔椂</span>
             </div>
 
-            <!-- 图表容器 -->
+            <!-- 鏁版嵁鏇存柊鏃堕棿锛堝悗绔?last_updated锛?-->
+            <div id="usage-last-updated" class="text-[11px] text-slate-400"></div>
+
+            <!-- 鍥捐〃瀹瑰櫒 -->
             <div id="usage-chart-container" class="w-full h-48 relative flex items-end">
-              <!-- SVG 曲线 / 柱形图在此由 JS 动态生成 -->
+              <!-- SVG 鏇茬嚎 / 鏌卞舰鍥惧湪姝ょ敱 JS 鍔ㄦ€佺敓鎴?-->
             </div>
           </div>
 
-          <!-- 下方明细两栏：模型统计与账号统计 -->
+          <!-- 涓嬫柟鏄庣粏涓ゆ爮锛氭ā鍨嬬粺璁′笌璐﹀彿缁熻 -->
           <div class="grid grid-cols-1 lg:grid-cols-2 gap-6">
-            <!-- 模型用量排行 -->
+            <!-- 妯″瀷鐢ㄩ噺鎺掕 -->
             <div class="p-6 rounded-2xl bg-white dark:bg-dark-card border border-slate-200 dark:border-dark-border space-y-4">
               <div class="flex items-center justify-between">
                 <h4 class="text-sm font-bold flex items-center gap-2">
                   <i data-lucide="cpu" class="w-4 h-4 text-blue-500"></i>
-                  模型消耗排行
-                </h4>
-                <span id="usage-model-count" class="text-xs text-slate-400">0 个模型</span>
+                  妯″瀷娑堣€楁帓琛?                </h4>
+                <span id="usage-model-count" class="text-xs text-slate-400">0 涓ā鍨?/span>
               </div>
 
-              <div class="overflow-x-auto">
-                <table class="w-full text-left text-xs">
+              <div class="overflow-x-auto -mx-1 px-1">
+                <table class="w-full min-w-[340px] text-left text-xs">
                   <thead class="text-slate-400 border-b border-slate-100 dark:border-slate-800/80">
                     <tr>
-                      <th class="pb-2.5 font-medium">模型</th>
-                      <th class="pb-2.5 font-medium text-right">调用</th>
-                      <th class="pb-2.5 font-medium text-right">总 Tokens</th>
-                      <th class="pb-2.5 font-medium text-right w-24">占比</th>
+                      <th class="pb-2.5 font-medium">妯″瀷</th>
+                      <th class="pb-2.5 font-medium text-right">璋冪敤</th>
+                      <th class="pb-2.5 font-medium text-right">鎬?Tokens</th>
+                      <th class="pb-2.5 font-medium text-right w-24">鍗犳瘮</th>
                     </tr>
                   </thead>
                   <tbody id="usage-model-tbody" class="divide-y divide-slate-100 dark:divide-slate-800/60 font-mono">
-                    <!-- 动态插入 -->
+                    <!-- 鍔ㄦ€佹彃鍏?-->
                   </tbody>
                 </table>
               </div>
             </div>
 
-            <!-- 账号用量排行 -->
+            <!-- 璐﹀彿鐢ㄩ噺鎺掕 -->
             <div class="p-6 rounded-2xl bg-white dark:bg-dark-card border border-slate-200 dark:border-dark-border space-y-4">
               <div class="flex items-center justify-between">
                 <h4 class="text-sm font-bold flex items-center gap-2">
                   <i data-lucide="shield-check" class="w-4 h-4 text-emerald-500"></i>
-                  账号调度分配
+                  璐﹀彿璋冨害鍒嗛厤
                 </h4>
-                <span id="usage-account-count" class="text-xs text-slate-400">0 个账号</span>
+                <span id="usage-account-count" class="text-xs text-slate-400">0 涓处鍙?/span>
               </div>
 
-              <div class="overflow-x-auto">
-                <table class="w-full text-left text-xs">
+              <div class="overflow-x-auto -mx-1 px-1">
+                <table class="w-full min-w-[340px] text-left text-xs">
                   <thead class="text-slate-400 border-b border-slate-100 dark:border-slate-800/80">
                     <tr>
-                      <th class="pb-2.5 font-medium">账号 UID</th>
-                      <th class="pb-2.5 font-medium text-right">调用</th>
-                      <th class="pb-2.5 font-medium text-right">总 Tokens</th>
-                      <th class="pb-2.5 font-medium text-right w-24">占比</th>
+                      <th class="pb-2.5 font-medium">璐﹀彿 UID</th>
+                      <th class="pb-2.5 font-medium text-right">璋冪敤</th>
+                      <th class="pb-2.5 font-medium text-right">鎬?Tokens</th>
+                      <th class="pb-2.5 font-medium text-right w-24">鍗犳瘮</th>
                     </tr>
                   </thead>
                   <tbody id="usage-account-tbody" class="divide-y divide-slate-100 dark:divide-slate-800/60 font-mono">
-                    <!-- 动态插入 -->
+                    <!-- 鍔ㄦ€佹彃鍏?-->
                   </tbody>
                 </table>
               </div>
@@ -745,75 +788,71 @@ resp = client.chat.completions.create(
           </div>
         </section>
 
-        <!-- 6. 连接设置 TAB -->
+        <!-- 6. 杩炴帴璁剧疆 TAB -->
         <section id="tab-settings" class="tab-pane hidden space-y-6">
           <div>
-            <h3 class="text-base font-bold">控制台连接与网关设置</h3>
-            <p class="text-xs text-slate-400 mt-0.5">配置目标路由器网关地址与认证密钥（保存在本地浏览器 LocalStorage）</p>
+            <h3 class="text-base font-bold">鎺у埗鍙拌繛鎺ヤ笌缃戝叧璁剧疆</h3>
+            <p class="text-xs text-slate-400 mt-0.5">閰嶇疆鐩爣璺敱鍣ㄧ綉鍏冲湴鍧€涓庤璇佸瘑閽ワ紙淇濆瓨鍦ㄦ湰鍦版祻瑙堝櫒 LocalStorage锛?/p>
           </div>
 
           <div class="max-w-2xl space-y-6">
-            <!-- 卡片 1：网关地址配置 -->
+            <!-- 鍗＄墖 1锛氱綉鍏冲湴鍧€閰嶇疆 -->
             <div class="p-6 rounded-2xl bg-white dark:bg-dark-card border border-slate-200 dark:border-dark-border space-y-4">
               <h4 class="text-sm font-bold flex items-center gap-2">
                 <i data-lucide="globe" class="w-4 h-4 text-indigo-500"></i>
-                网关访问地址 (Gateway Host)
+                缃戝叧璁块棶鍦板潃 (Gateway Host)
               </h4>
               <div>
                 <input type="text" id="setting-gateway-url" placeholder="http://localhost:7863" class="w-full bg-slate-50 dark:bg-slate-900 border border-slate-200 dark:border-slate-800 rounded-xl px-4 py-2.5 text-xs text-slate-800 dark:text-slate-200 font-mono focus:outline-none focus:border-indigo-500">
                 <div class="flex items-center gap-2 mt-2">
-                  <span class="text-[11px] text-slate-400">快速切换预设:</span>
-                  <button onclick="app.setGatewayPreset('http://localhost:7863')" class="px-2 py-0.5 rounded text-[10px] bg-slate-100 dark:bg-slate-800 hover:bg-slate-200 text-slate-600 dark:text-slate-300 font-mono">内网局域网</button>
-                  <button onclick="app.setGatewayPreset('http://yukiryo-router.dns.army:7863')" class="px-2 py-0.5 rounded text-[10px] bg-indigo-50 dark:bg-indigo-950/60 hover:bg-indigo-100 text-indigo-600 dark:text-indigo-400 font-mono">公网 DDNS 域名</button>
+                  <span class="text-[11px] text-slate-400">蹇€熷垏鎹㈤璁?</span>
+                  <button onclick="app.setGatewayPreset('http://localhost:7863')" class="px-2 py-0.5 rounded text-[10px] bg-slate-100 dark:bg-slate-800 hover:bg-slate-200 text-slate-600 dark:text-slate-300 font-mono">鍐呯綉灞€鍩熺綉</button>
+                  <button onclick="app.setGatewayPreset('http://yukiryo-router.dns.army:7863')" class="px-2 py-0.5 rounded text-[10px] bg-indigo-50 dark:bg-indigo-950/60 hover:bg-indigo-100 text-indigo-600 dark:text-indigo-400 font-mono">鍏綉 DDNS 鍩熷悕</button>
                 </div>
               </div>
             </div>
 
-            <!-- 卡片 2：在线 API Key 管理与一键推送到路由器 -->
+            <!-- 鍗＄墖 2锛氬湪绾?API Key 绠＄悊涓庝竴閿帹閫佸埌璺敱鍣?-->
             <div class="p-6 rounded-2xl bg-white dark:bg-dark-card border border-slate-200 dark:border-dark-border space-y-4">
               <div class="flex items-center justify-between">
                 <h4 class="text-sm font-bold flex items-center gap-2">
                   <i data-lucide="shield-check" class="w-4 h-4 text-emerald-500"></i>
-                  网关 API Key 远程管理与同步
-                </h4>
-                <span class="text-[10px] text-slate-400">支持对标 codebuddy2api 在线配置</span>
+                  缃戝叧 API Key 杩滅▼绠＄悊涓庡悓姝?                </h4>
+                <span class="text-[10px] text-slate-400">鏀寔瀵规爣 codebuddy2api 鍦ㄧ嚎閰嶇疆</span>
               </div>
-              <p class="text-xs text-slate-400">设置访问令牌后，外部调用必须带上该令牌（防公网白嫖），在此修改可<strong>一键热推送到路由器生效</strong>。</p>
+              <p class="text-xs text-slate-400">璁剧疆璁块棶浠ょ墝鍚庯紝澶栭儴璋冪敤蹇呴』甯︿笂璇ヤ护鐗岋紙闃插叕缃戠櫧瀚栵級锛屽湪姝や慨鏀瑰彲<strong>涓€閿儹鎺ㄩ€佸埌璺敱鍣ㄧ敓鏁?/strong>銆?/p>
               
               <div class="space-y-3">
                 <div class="relative">
-                  <input type="text" id="setting-api-key" placeholder="例如 sk-yukiryo888（留空表示免密）" class="w-full bg-slate-50 dark:bg-slate-900 border border-slate-200 dark:border-slate-800 rounded-xl px-4 py-2.5 pr-24 text-xs text-slate-800 dark:text-slate-200 font-mono focus:outline-none focus:border-indigo-500">
+                  <input type="text" id="setting-api-key" placeholder="渚嬪 sk-yukiryo888锛堢暀绌鸿〃绀哄厤瀵嗭級" class="w-full bg-slate-50 dark:bg-slate-900 border border-slate-200 dark:border-slate-800 rounded-xl px-4 py-2.5 pr-24 text-xs text-slate-800 dark:text-slate-200 font-mono focus:outline-none focus:border-indigo-500">
                   <button onclick="app.generateRandomKey()" class="absolute right-2 top-2 px-2.5 py-1 text-[10px] font-semibold bg-indigo-50 dark:bg-indigo-950/60 text-indigo-600 dark:text-indigo-400 hover:bg-indigo-100 dark:hover:bg-indigo-900/60 rounded-lg transition-colors">
-                    随机生成
+                    闅忔満鐢熸垚
                   </button>
                 </div>
 
                 <div class="flex items-center justify-between pt-2">
                   <button onclick="app.fetchRouterKey()" class="text-xs text-slate-400 hover:text-slate-200 flex items-center gap-1">
                     <i data-lucide="refresh-ccw" class="w-3.5 h-3.5"></i>
-                    重新拉取路由器当前密钥
-                  </button>
+                    閲嶆柊鎷夊彇璺敱鍣ㄥ綋鍓嶅瘑閽?                  </button>
                   <button onclick="app.syncKeyToRouter()" id="btn-sync-key" class="px-4 py-2 rounded-xl bg-emerald-600 hover:bg-emerald-500 text-white text-xs font-semibold shadow-lg shadow-emerald-600/20 transition-all flex items-center gap-1.5">
                     <i data-lucide="send" class="w-3.5 h-3.5"></i>
-                    同步并保存至路由器网关
-                  </button>
+                    鍚屾骞朵繚瀛樿嚦璺敱鍣ㄧ綉鍏?                  </button>
                 </div>
               </div>
             </div>
 
-            <!-- 卡片 3：本地控制台设置应用 -->
+            <!-- 鍗＄墖 3锛氭湰鍦版帶鍒跺彴璁剧疆搴旂敤 -->
             <div class="p-6 rounded-2xl bg-white dark:bg-dark-card border border-slate-200 dark:border-dark-border flex items-center justify-between">
               <div>
-                <h5 class="text-xs font-bold text-slate-700 dark:text-slate-300">本地控制台连接配置</h5>
-                <p class="text-[11px] text-slate-400">将上述网关地址与密钥保存到浏览器记忆并重新建立连接</p>
+                <h5 class="text-xs font-bold text-slate-700 dark:text-slate-300">鏈湴鎺у埗鍙拌繛鎺ラ厤缃?/h5>
+                <p class="text-[11px] text-slate-400">灏嗕笂杩扮綉鍏冲湴鍧€涓庡瘑閽ヤ繚瀛樺埌娴忚鍣ㄨ蹇嗗苟閲嶆柊寤虹珛杩炴帴</p>
               </div>
               <div class="flex items-center gap-3">
                 <button onclick="app.resetSettings()" class="px-4 py-2 rounded-xl text-xs text-slate-400 hover:text-slate-200 transition-colors">
-                  恢复默认
+                  鎭㈠榛樿
                 </button>
                 <button onclick="app.saveSettings()" class="px-5 py-2.5 rounded-xl bg-indigo-600 hover:bg-indigo-500 text-white text-xs font-semibold shadow-lg shadow-indigo-600/30 transition-all">
-                  保存并重连
-                </button>
+                  淇濆瓨骞堕噸杩?                </button>
               </div>
             </div>
           </div>
@@ -823,58 +862,68 @@ resp = client.chat.completions.create(
     </main>
   </div>
 
-  <!-- Toast 消息气泡提示 -->
+  <!-- Toast 娑堟伅姘旀场鎻愮ず -->
   <div id="toast" class="fixed bottom-6 right-6 z-50 transform translate-y-16 opacity-0 transition-all duration-300 px-4 py-2.5 rounded-xl text-xs font-medium flex items-center gap-2 shadow-xl"></div>
 
-  <!-- OAuth 登录添加账号 弹窗 -->
+  <!-- OAuth 鐧诲綍娣诲姞璐﹀彿 寮圭獥 -->
   <div id="oauth-modal" class="hidden fixed inset-0 z-50 bg-slate-900/60 backdrop-blur-sm flex items-center justify-center p-4">
     <div class="w-full max-w-md rounded-2xl bg-white dark:bg-dark-card border border-slate-200 dark:border-dark-border shadow-2xl p-6 space-y-5">
       <div class="flex items-start justify-between">
         <div>
           <h3 class="text-sm font-bold flex items-center gap-2">
             <i data-lucide="log-in" class="w-4 h-4 text-indigo-500"></i>
-            登录添加 CodeBuddy 账号
+            鐧诲綍娣诲姞 CodeBuddy 璐﹀彿
           </h3>
-          <p class="text-[11px] text-slate-400 mt-1">登录后凭证会自动保存到路由器并立即生效</p>
+          <p class="text-[11px] text-slate-400 mt-1">鐧诲綍鍚庡嚟璇佷細鑷姩淇濆瓨鍒拌矾鐢卞櫒骞剁珛鍗崇敓鏁?/p>
         </div>
         <button onclick="app.closeOAuthModal()" class="p-1 rounded-lg text-slate-400 hover:text-slate-600 dark:hover:text-slate-200 transition-colors">
           <i data-lucide="x" class="w-4 h-4"></i>
         </button>
       </div>
 
-      <!-- 步骤 1：申请链接 -->
+      <!-- 姝ラ 1锛氱敵璇烽摼鎺?-->
       <div id="oauth-step-start" class="space-y-3">
         <p class="text-xs text-slate-500 dark:text-slate-400">
-          点击下方按钮申请登录链接，然后在浏览器中完成登录。
-        </p>
+          鐐瑰嚮涓嬫柟鎸夐挳鐢宠鐧诲綍閾炬帴锛岀劧鍚庡湪娴忚鍣ㄤ腑瀹屾垚鐧诲綍銆?        </p>
         <button id="oauth-start-btn" onclick="app.startOAuth()" class="w-full px-4 py-2.5 rounded-xl bg-indigo-600 hover:bg-indigo-500 text-white text-xs font-semibold transition-colors flex items-center justify-center gap-2 disabled:opacity-60">
           <i data-lucide="external-link" class="w-3.5 h-3.5"></i>
-          <span id="oauth-start-text">生成登录链接</span>
+          <span id="oauth-start-text">鐢熸垚鐧诲綍閾炬帴</span>
         </button>
       </div>
 
-      <!-- 步骤 2：打开链接 + 等待 -->
+      <!-- 姝ラ 2锛氭墦寮€閾炬帴 + 绛夊緟 -->
       <div id="oauth-step-wait" class="hidden space-y-3">
         <div class="p-3 rounded-xl bg-slate-50 dark:bg-slate-900/60 border border-slate-200 dark:border-slate-800 space-y-2">
-          <div class="text-[11px] text-slate-500 dark:text-slate-400 font-medium">第 1 步：打开登录页</div>
+          <div class="text-[11px] text-slate-500 dark:text-slate-400 font-medium">绗?1 姝ワ細鎵撳紑鐧诲綍椤?/div>
           <a id="oauth-link" href="#" target="_blank" rel="noopener" class="block text-[11px] font-mono text-indigo-500 hover:text-indigo-400 break-all underline underline-offset-2"></a>
           <button onclick="app.openOAuthLink()" class="w-full mt-1 px-3 py-2 rounded-lg bg-indigo-600 hover:bg-indigo-500 text-white text-xs font-medium transition-colors">
-            在新窗口打开登录页
-          </button>
+            鍦ㄦ柊绐楀彛鎵撳紑鐧诲綍椤?          </button>
         </div>
 
         <div class="p-3 rounded-xl bg-slate-50 dark:bg-slate-900/60 border border-slate-200 dark:border-slate-800 space-y-2">
-          <div class="text-[11px] text-slate-500 dark:text-slate-400 font-medium">第 2 步：登录完成后点这里</div>
+          <div class="text-[11px] text-slate-500 dark:text-slate-400 font-medium">绗?2 姝ワ細鐧诲綍瀹屾垚鍚庣偣杩欓噷</div>
           <button id="oauth-poll-btn" onclick="app.pollOAuth()" class="w-full px-3 py-2 rounded-lg bg-emerald-600 hover:bg-emerald-500 text-white text-xs font-medium transition-colors flex items-center justify-center gap-2 disabled:opacity-60">
             <i data-lucide="check-circle-2" class="w-3.5 h-3.5"></i>
-            <span id="oauth-poll-text">我已登录，检查状态</span>
+            <span id="oauth-poll-text">鎴戝凡鐧诲綍锛屾鏌ョ姸鎬?/span>
           </button>
-          <p id="oauth-poll-hint" class="text-[10px] text-slate-400 text-center">链接 30 分钟内有效</p>
+          <p id="oauth-poll-hint" class="text-[10px] text-slate-400 text-center">閾炬帴 30 鍒嗛挓鍐呮湁鏁?/p>
         </div>
       </div>
     </div>
   </div>
 
   <script src="app.js"></script>
+
+  <!-- PWA锛氭敞鍐?Service Worker锛堜粎 HTTPS / localhost 鐢熸晥锛涚函 HTTP 璁块棶鏃堕潤榛樿烦杩囷級 -->
+  <script>
+    if ('serviceWorker' in navigator) {
+      window.addEventListener('load', function () {
+        navigator.serviceWorker.register('/sw.js').catch(function (err) {
+          // 闈炲畨鍏ㄤ笂涓嬫枃锛堝 http://192.168.x.x锛変細娉ㄥ唽澶辫触锛屽睘棰勬湡锛屼笉鎵撴壈鐢ㄦ埛
+          console.debug('SW 娉ㄥ唽璺宠繃:', err && err.message);
+        });
+      });
+    }
+  </script>
 </body>
 </html>
