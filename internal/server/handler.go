@@ -581,21 +581,30 @@ func (h *Handler) chatCompletions(w http.ResponseWriter, r *http.Request) {
 	// 会话粘性：从请求体提取会话键并解析绑定号（找不到/无效则 stickyUID 为空，走普通轮换）。
 	// 按模型解析：同一个会话可能换模型，绑定号若在当前模型上被 6004 限额（对其他模型
 	// 仍可用），必须重分配——否则会被钉在这个号上反复失败。
-	sessKey := ""
+	// 提取与下方会话头族的聚合键共用同一结果，故**不受粘性开关影响**：粘性未启用
+	// （Session==nil）时聚合键仍应是会话级，而不是退化成轮级。
+	sessKey := session.ExtractKey(body)
 	stickyUID := ""
-	if h.cfg.Session != nil {
-		sessKey = session.ExtractKey(body)
-		if sessKey != "" {
-			// 传给 ResolveForModel 的是**完整**模型名（peek.Model，含 realm 前缀）。
-			// 粘性命中校验走 injected AvailableForModel 闭包 → 闭包内部 resolveModel 剥前缀
-			// 得 realm+bare，再按 realm 过滤可用集合。若传已剥前缀的 bareModel，闭包对裸名
-			// 恒剥出 realm=cn，跨 realm 粘性会话会被错误钉回 CN 集合；完整前缀才能让
-			// 闭包正确过滤到 global 集合（见 cmd/server/wiring.go realmAwareAvailableForModel）。
-			// 模型名也参与成本账本与选号过滤，不能用 "-" 占位污染模型键。
-			if uid, ok := h.cfg.Session.ResolveForModel(sessKey, peek.Model); ok {
-				stickyUID = uid
-			}
+	if h.cfg.Session != nil && sessKey != "" {
+		// 传给 ResolveForModel 的是**完整**模型名（peek.Model，含 realm 前缀）。
+		// 粘性命中校验走 injected AvailableForModel 闭包 → 闭包内部 resolveModel 剥前缀
+		// 得 realm+bare，再按 realm 过滤可用集合。若传已剥前缀的 bareModel，闭包对裸名
+		// 恒剥出 realm=cn，跨 realm 粘性会话会被错误钉回 CN 集合；完整前缀才能让
+		// 闭包正确过滤到 global 集合（见 cmd/server/wiring.go realmAwareAvailableForModel）。
+		// 模型名也参与成本账本与选号过滤，不能用 "-" 占位污染模型键。
+		if uid, ok := h.cfg.Session.ResolveForModel(sessKey, peek.Model); ok {
+			stickyUID = uid
 		}
+	}
+
+	// 轮级兜底聚合键：无会话键的客户端（OpenAI 兼容协议——dsh / Codex / Cherry
+	// Studio 等请求体里既无 conversationId 也无 metadata）sessKey 恒空，会话头族的
+	// 聚合主键此前只能逐请求新生成，agent 多轮在上游用量明细里仍是一条请求一条记录。
+	// 这里按 body 里最后一条 user 消息派生轮级键（同轮内所有上游调用同键）。
+	// 必须在下方 prompt.Rewrite / rewriteModel 之前取——改写会动 messages 内容。
+	turnKey := ""
+	if sessKey == "" {
+		turnKey = session.TurnKey(body)
 	}
 
 	// 在途租约：成功选中即占名额；函数出口（含成功 return 与 panic）统一释放。
@@ -644,6 +653,30 @@ func (h *Handler) chatCompletions(w http.ResponseWriter, r *http.Request) {
 	if bareModel != peek.Model {
 		body = rewriteModel(body, bareModel)
 	}
+
+	// 会话头族（issue #35）：后台按 X-Conversation-Request-ID（对话轮级）聚合请求，
+	// 官方客户端一次 user send 内所有 tool call/重试/换号复用同一个 ID。此处**轮转
+	// 循环外**生成一次，循环内每次出站原样复用 → 换号/重试/降级全部同 ID，后台不再
+	// 碎片化（此前网关一个都不发，上游按 HTTP 请求逐条记账，同一对话几十上百个
+	// RequestID）。
+	//   - conversationID：body 提取（透传客户端原值，缺省空串——不伪造，见
+	//     ResolveConversationID；官方后台不校验一致，空会话则不建立聚合键）；
+	//   - conversationRequestID：入站 X-Conversation-Request-ID 透传优先（客户端已
+	//     有自己的对话轮 ID 则以客户端为准），否则按粘性 key 进程内稳定生成（同会话
+	//     恒同值）；粘性 key 也为空时走轮级兜底（session.TurnKey/TurnRequestID），
+	//     无 user 消息时退化成本请求级 NewMessageID——轮转内捕获一次即共享；
+	//   - messageID 在 ChatHeaders 内每条消息生成（消息级独立，无需外部可见）。
+	chatMeta := upstream.ChatMeta{ConversationID: session.ResolveConversationID(body)}
+	if v := r.Header.Get("X-Conversation-Request-ID"); v != "" {
+		chatMeta.ConversationRequestID = v
+	} else if sessKey != "" {
+		chatMeta.ConversationRequestID = session.RequestIDForKey(sessKey)
+	} else {
+		// 无会话键客户端：轮级兜底——同轮内 tool call 多轮 / 换号重试 / 降级重发
+		// 共享同键，用户发下一条消息自动换键。
+		chatMeta.ConversationRequestID = session.TurnRequestID(turnKey)
+	}
+	chatMeta.TraceID = r.Header.Get("X-Trace-ID")
 
 	for i := 0; i < h.cfg.MaxRotate; i++ {
 		// 选号：粘性号优先（PickByUIDForModel 已校验该模型可用性 + 在途未满），否则普通轮换。
@@ -704,7 +737,7 @@ func (h *Handler) chatCompletions(w http.ResponseWriter, r *http.Request) {
 		if h.cfg.Upstream.PassthroughIP {
 			clientIP = upstream.ExtractClientIP(r)
 		}
-		rc, status, respBody, terr := h.cfg.Upstream.ChatStream(acct, body, clientIP)
+		rc, status, respBody, terr := h.cfg.Upstream.ChatStream(acct, body, clientIP, chatMeta)
 		if terr != nil {
 			// 网络层抖动：只换号，不喂熔断计数（传输层错误对连续失败连坐熔断过于严苛）。
 			// 上游 client 已打 transport error 日志。

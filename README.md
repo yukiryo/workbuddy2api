@@ -5,7 +5,7 @@
 <h1 align="center">WorkBuddy2API</h1>
 
 <p align="center">
-  <b>把腾讯 CodeBuddy 账号变成 OpenAI 兼容 API 的多账号网关</b><br>
+  <b>把 CodeBuddy 账号变成 OpenAI 兼容 API 的多账号网关</b><br>
   OAuth 登录 · 账号池轮转 · 熔断与冷却 · 会话粘性 · 积分补充
 </p>
 
@@ -56,6 +56,7 @@ WorkBuddy2API 是一个自托管的 **OpenAI 兼容反向代理网关**，将 ``
 - **流式 + 非流式** — 出站强制 `stream:true`；SSE 帧按 OpenAI 规范白名单重建；非流式由本地聚合为单响应
 - **DeepSeek 思维链注入** — 出站请求体注入 `thinking.type=enabled` + 默认档位，`reasoning_content` 多轮回填，`reasoning_effort` 按模型档位自动降级
 - **系统提示词体系** — 网关自有提示词替换客户端 system（`custom` 模式，默认），从源头消除模板句误报；`passthrough` 模式遇拦截自动降级中性提示词重试
+- **会话头族注入** — 出站携带官方客户端会话头族（`X-Conversation-Request-ID` 聚合主键 · `X-Conversation-ID` 透传 · B3 链路），轮转 / 重试 / 路径回退复用同键，后台按对话轮聚合不再碎片化（issue #35）
 - **指纹脱敏** — 出站请求体黑名单指纹字段清洗（可开关），与提示词体系两层叠加
 
 ### 定时积分任务
@@ -264,7 +265,7 @@ curl -s http://localhost:7863/v1/chat/completions \
 - **无预编译 release**：仓库无 Release / tag，产物 = 源码自构建（Dockerfile 多阶段在本地构建时完成）
 - 登录 / 签到 / 积分工具：`./login.sh` / `./signin.sh` / `./credit.sh`
 - **无产物校验和**：`go.sum` 仅约束 Go 模块依赖；Docker 镜像由本地 `docker compose build` 生成，未引用第三方镜像
-- 上游 CodeBuddy 属腾讯系商业产品，本项目是其**非官方 OpenAI 兼容网关**；使用其账号做 API 网关涉及目标平台服务条款与账号风险，作者不对账号封禁、条款违约或使用结果负责
+- 上游 CodeBuddy 属第三方商业产品，本项目是其**非官方 OpenAI 兼容网关**；使用其账号做 API 网关涉及目标平台服务条款与账号风险，作者不对账号封禁、条款违约或使用结果负责
 
 ### 授权使用边界
 
@@ -316,5 +317,5 @@ curl -s http://localhost:7863/v1/chat/completions \
 
 - 在遵守 MIT License 前提下，允许使用、复制、修改、合并本项目源代码
 - 再分发（源码或二进制形式）时，须保留原仓库的 MIT 版权声明与许可声明，并在 NOTICE 或 README 中注明原始出处 `https://github.com/Sliverkiss/workbuddy2api`
-- 本项目不授予任何上游（CodeBuddy / 腾讯）接口或服务的权利；使用者仍需自行遵守上游服务条款
+- 本项目不授予任何上游（CodeBuddy）接口或服务的权利；使用者仍需自行遵守上游服务条款
 - 本项目的使用同时受上方**免责声明**约束；如免责声明与 MIT License 存在不一致，以免责声明为准
