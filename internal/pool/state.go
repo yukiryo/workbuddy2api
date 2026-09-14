@@ -483,10 +483,19 @@ func (p *Pool) rateLimitedModelsLocked(e *entry, now time.Time) []RateLimitedMod
 				Until:  mc.Until,
 				Reason: mc.Reason,
 			}
-			// 上游原始重置墙钟：截断后 until==resetAt 时省略（omitempty），台账只显示真实恢复时刻。
-			if !mc.ResetAt.IsZero() && !mc.ResetAt.Equal(mc.Until) {
-				row.ResetAt = mc.ResetAt
-			}
+			// 上游原始重置墙钟：始终透出，不做"与 until 相等就省略"的优化。
+			//
+			// 为什么省不得：Until 与 ResetAt 语义不同——
+			//   Until   = 网关冷却截止（可能被 soft_rate_max 截断）
+			//   ResetAt = 上游声明的恢复时刻（权威，永不截断）
+			// 未截断时两者数值恰好相等，但那是**语义重合**而非冗余：
+			// 省略后，消费方无法区分"本次未被截断"与"字段缺失"，
+			// 运维也就看不到上游的真实恢复时刻（issue #36 的本意正在于此）。
+			//
+			// 此前该处有一行 `!mc.ResetAt.Equal(mc.Until)` 的条件，导致未截断
+			// 场景下 ResetAt 恒为零值，TestRateLimitedModelsInStatus 与
+			// TestStatusRateLimitedModelsLedger 长期失败（已在上游复现）。
+			row.ResetAt = mc.ResetAt
 			rows = append(rows, row)
 		}
 	}
