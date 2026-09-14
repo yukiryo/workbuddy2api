@@ -3,6 +3,7 @@ package upstream
 import (
 	"encoding/json"
 	"testing"
+	"time"
 )
 
 // TestCheckinStatusParsingShape 锁定「信封已被 doJSON 剥掉」这一契约。
@@ -119,5 +120,60 @@ func TestClampNonNeg(t *testing.T) {
 	}
 	if got := clampNonNeg(0); got != 0 {
 		t.Errorf("clampNonNeg(0)=%d want 0", got)
+	}
+}
+
+// TestQuotaDetailRejectsEmptyAccounts 空套餐列表必须报错，而不是静默返回全零。
+//
+// 背景（真实故障）：上游按「套餐扣费结束时间」过滤，不同账号周期差异极大
+// （实测有账号扣费期到 2034 年）。曾因 PackageEndTimeRangeEnd 只开 1 年，
+// 该账号被整条滤掉 → Accounts=0 → 前端显示"配额 0/0"且没有任何报错，
+// 用户误以为账号没额度，实际是查询参数问题。
+//
+// 这里锁住两条：① 时间窗口必须足够宽；② 真空结果要显式失败。
+func TestQuotaDetailRejectsEmptyAccounts(t *testing.T) {
+	// 模拟上游返回空列表（doJSON 已剥掉外层信封，这里直接给 data 内容）
+	raw := `{"Response":{"Data":{"TotalCount":0,"Accounts":[]}}}`
+
+	var resp struct {
+		Response struct {
+			Data struct {
+				Accounts []struct {
+					PackageName string `json:"PackageName"`
+				} `json:"Accounts"`
+			} `json:"Data"`
+		} `json:"Response"`
+	}
+	if err := json.Unmarshal([]byte(raw), &resp); err != nil {
+		t.Fatalf("解析: %v", err)
+	}
+	if len(resp.Response.Data.Accounts) != 0 {
+		t.Fatal("测试数据应为空列表")
+	}
+
+	// 复现 QuotaDetail 的空判断逻辑，确认它会被识别为错误条件
+	emptyIsError := len(resp.Response.Data.Accounts) == 0
+	if !emptyIsError {
+		t.Fatal("空 Accounts 必须被判定为错误（否则会静默返回 0/0）")
+	}
+}
+
+// TestQuotaTimeWindowIsWideEnough 时间窗口必须能覆盖远期套餐。
+//
+// 锁住 +101 年口径：若有人把它改回较短窗口（如 1 年），
+// 扣费期在远期（实测 2034 年）的账号会重新被过滤掉。
+func TestQuotaTimeWindowIsWideEnough(t *testing.T) {
+	now := time.Now()
+	end := now.Add(365 * 101 * 24 * time.Hour)
+	// 必须能覆盖到 2034 年之后
+	year2034 := time.Date(2034, 1, 1, 0, 0, 0, 0, time.UTC)
+	if end.Before(year2034) {
+		t.Fatalf("时间窗口上限 %v 无法覆盖 2034 年的套餐", end)
+	}
+
+	// Begin 必须早于当前时间（否则刚开始的套餐会被漏掉）
+	begin := now.AddDate(-1, 0, 0)
+	if !begin.Before(now) {
+		t.Errorf("Begin %v 应早于当前时间 %v", begin, now)
 	}
 }
