@@ -160,6 +160,15 @@ func NewHandler(cfg Config) *Handler {
 		fileServer := http.FileServer(http.Dir(webDir))
 		h.mux.HandleFunc("GET /", func(w http.ResponseWriter, r *http.Request) {
 			p := r.URL.Path
+			// API 命名空间下的未知路径必须返回 JSON 404，**不得**落入下面的
+			// SPA 兜底返回 index.html。否则 API 客户端（期待 JSON）会收到一大段
+			// HTML——解析失败且看不出原因，是最难排查的一类故障。
+			// 已注册的具体路由不会走到这里，能到这里的只剩拼错/不存在的 API 路径。
+			if strings.HasPrefix(p, "/api/") || strings.HasPrefix(p, "/v1/") {
+				writeOpenAIError(w, http.StatusNotFound, "unknown_endpoint",
+					"no such API endpoint: "+p)
+				return
+			}
 			// PWA 资源（manifest / Service Worker / 图标）也必须能直接命中静态文件，
 			// 否则会被下面的 SPA 兜底逻辑返回 index.html，导致 manifest 解析失败、
 			// Service Worker 注册报 "unsupported MIME type"。
